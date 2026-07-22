@@ -72,9 +72,18 @@ function bigramCounts(s: string): Map<string, number> {
   return m;
 }
 
+function normalizeTitle(s: string): string {
+  // Без unicode-класів (\p{...}) — сумісно з target ES5 у tsconfig
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9а-яіїєґ\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function looksDuplicate(a: string, b: string): boolean {
-  const na = a.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
-  const nb = b.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  const na = normalizeTitle(a);
+  const nb = normalizeTitle(b);
   if (!na || !nb) return false;
   if (na === nb) return true;
   const ma = bigramCounts(na);
