@@ -21,6 +21,12 @@ type Mood = "idle" | "listening" | "thinking" | "happy" | "calm";
 const STORAGE_KEY = "ai-planner-tasks-v1";
 const SEEN_KEY = "nora_seen";
 
+const PROCESS_PHRASES = [
+  "Розділяю на окремі справи…",
+  "Визначаю, що важливо сьогодні…",
+  "Формую твій план…",
+];
+
 const PRIORITY_LABEL: Record<Priority, string> = {
   high: "Важливо",
   medium: "Вдень",
@@ -120,7 +126,11 @@ export default function Home() {
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
   const [parsing, setParsing] = useState(false);
+  const [phrase, setPhrase] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<Task[]>([]);
+  const [pendingEditIdx, setPendingEditIdx] = useState<number | null>(null);
+  const [pendingEditText, setPendingEditText] = useState("");
   const [lastBatch, setLastBatch] = useState<Task[]>([]);
   const [reaction, setReaction] = useState<string | null>(null);
   const [editing, setEditing] = useState<Task | null>(null);
@@ -153,6 +163,17 @@ export default function Home() {
       // ignore
     }
   }, [tasks, mounted]);
+
+  // Ротація фраз обробки
+  useEffect(() => {
+    if (!parsing) return;
+    setPhrase(0);
+    const t = setInterval(
+      () => setPhrase((p) => (p + 1) % PROCESS_PHRASES.length),
+      1000
+    );
+    return () => clearInterval(t);
+  }, [parsing]);
 
   const markSeen = useCallback(() => {
     try {
@@ -207,6 +228,7 @@ export default function Home() {
     }
   }, [draft, listening, stopListening]);
 
+  // Розбір: викликається з екрана Capture, результат — на екран довіри
   const parse = useCallback(async () => {
     const text = draft.trim();
     if (!text || parsing) return;
@@ -241,10 +263,9 @@ export default function Home() {
           createdAt: Date.now() + i,
         })
       );
-      setTasks((prev) => [...prev, ...incoming]);
-      setLastBatch(incoming);
-      setDraft("");
-      setView("thought");
+      setPending(incoming);
+      setPendingEditIdx(null);
+      setView("confirm");
     } catch {
       setError("Звʼязок загубився. Перевір інтернет — і спробуймо ще раз.");
     } finally {
@@ -252,28 +273,52 @@ export default function Home() {
     }
   }, [draft, parsing, stopListening]);
 
-  const toggleDone = useCallback(
-    (id: string) => {
-      setTasks((prev) => {
-        const next = prev.map((t) =>
-          t.id === id ? { ...t, done: !t.done } : t
-        );
-        const t = next.find((x) => x.id === id);
-        if (t?.done) {
-          const todayList = next.filter((x) => x.list === "today");
-          const left = todayList.filter((x) => !x.done).length;
-          setReaction(
-            left === 0 && todayList.length > 0
-              ? "Усе виконано. Сьогодні ти молодець."
-              : "Один крок зроблено. Гарний темп."
+  const savePendingEdit = useCallback(() => {
+    setPendingEditIdx((idx) => {
+      if (idx !== null) {
+        const text = pendingEditText.trim();
+        if (text) {
+          setPending((prev) =>
+            prev.map((t, i) => (i === idx ? { ...t, title: text } : t))
           );
-          setTimeout(() => setReaction(null), 3500);
         }
-        return next;
-      });
-    },
-    []
-  );
+      }
+      return null;
+    });
+  }, [pendingEditText]);
+
+  const confirmPending = useCallback(() => {
+    setTasks((prev) => [...prev, ...pending]);
+    setLastBatch(pending);
+    setPending([]);
+    setDraft("");
+    setView("thought");
+  }, [pending]);
+
+  const retryCapture = useCallback(() => {
+    setPending([]);
+    setDraft("");
+    setError(null);
+    setView("capture");
+  }, []);
+
+  const toggleDone = useCallback((id: string) => {
+    setTasks((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+      const t = next.find((x) => x.id === id);
+      if (t?.done) {
+        const todayList = next.filter((x) => x.list === "today");
+        const left = todayList.filter((x) => !x.done).length;
+        setReaction(
+          left === 0 && todayList.length > 0
+            ? "Усе виконано. Сьогодні ти молодець."
+            : "Один крок зроблено. Гарний темп."
+        );
+        setTimeout(() => setReaction(null), 3500);
+      }
+      return next;
+    });
+  }, []);
 
   const removeTask = useCallback((id: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
@@ -347,9 +392,18 @@ export default function Home() {
     );
   }
 
-  /* ─────────── CAPTURE ─────────── */
-  if (view === "capture" || view === "confirm") {
-    const isConfirm = view === "confirm";
+  /* ─────────── CAPTURE (+ обробка) ─────────── */
+  if (view === "capture") {
+    if (parsing) {
+      return (
+        <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16">
+          <Nora mood="thinking" size={112} />
+          <p className="serif rise text-center text-[18px] italic text-[#7B7770]">
+            {PROCESS_PHRASES[phrase]}
+          </p>
+        </main>
+      );
+    }
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-6 pb-10 pt-8">
         <button
@@ -364,117 +418,147 @@ export default function Home() {
 
         <div className="mt-8 flex flex-col items-center gap-6">
           <Nora mood={mood} size={96} />
-          {!isConfirm ? (
-            <>
-              <div className="text-center">
-                <p className="text-sm text-[#7B7770]">{greeting()}.</p>
-                <h1 className="serif mt-1 text-[24px] leading-snug text-[#191815]">
-                  Що сьогодні займає твої думки?
-                </h1>
-              </div>
+          <div className="text-center">
+            <p className="text-sm text-[#7B7770]">{greeting()}.</p>
+            <h1 className="serif mt-1 text-[24px] leading-snug text-[#191815]">
+              Що сьогодні займає твої думки?
+            </h1>
+          </div>
 
-              {speechSupported && (
-                <button
-                  onClick={toggleListening}
-                  className={`w-full max-w-xs rounded-2xl px-6 py-4 text-[15px] font-medium transition active:scale-[0.98] ${
-                    listening
-                      ? "bg-[#B5793A] text-white"
-                      : "bg-[#191815] text-[#F6F5F2]"
-                  }`}
-                >
-                  {listening ? "Я слухаю… натисни, коли закінчиш" : "🎙 Говорити"}
-                </button>
-              )}
+          {speechSupported && (
+            <button
+              onClick={toggleListening}
+              className={`w-full max-w-xs rounded-2xl px-6 py-4 text-[15px] font-medium transition active:scale-[0.98] ${
+                listening
+                  ? "bg-[#B5793A] text-white"
+                  : "bg-[#191815] text-[#F6F5F2]"
+              }`}
+            >
+              {listening ? "Я слухаю… натисни, коли закінчиш" : "🎙 Говорити"}
+            </button>
+          )}
 
-              <div className="w-full">
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Або запиши текстом…"
-                  rows={4}
-                  className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-[15px] leading-relaxed text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
-                />
-              </div>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Або запиши текстом…"
+            rows={4}
+            className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-[15px] leading-relaxed text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
+          />
 
-              {draft.trim() && !listening && (
-                <button
-                  onClick={() => setView("confirm")}
-                  className="rise w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
-                >
-                  Далі
-                </button>
-              )}
-            </>
-          ) : (
-            <>
-              <h1 className="serif text-center text-[22px] leading-snug text-[#191815]">
-                Перевір, чи правильно я тебе зрозуміла
-              </h1>
-              <textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                rows={6}
-                className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-[15px] leading-relaxed text-[#191815] outline-none focus:border-[#C88A4E]"
-              />
-              {error && (
-                <p className="rounded-xl bg-[#F7E7E2] p-3 text-center text-sm text-[#A8402F]">
-                  {error}
-                </p>
-              )}
-              <div className="flex w-full gap-3">
-                <button
-                  onClick={() => {
-                    setDraft("");
-                    setError(null);
-                    setView("capture");
-                  }}
-                  className="flex-1 rounded-2xl border border-[#E8E5DF] px-4 py-4 text-[15px] text-[#7B7770] transition active:scale-[0.98]"
-                >
-                  ↺ Перезаписати
-                </button>
-                <button
-                  onClick={parse}
-                  disabled={parsing || !draft.trim()}
-                  className="flex-1 rounded-2xl bg-[#191815] px-4 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98] disabled:opacity-40"
-                >
-                  {parsing ? "Думаю…" : "Все вірно"}
-                </button>
-              </div>
-            </>
+          {error && (
+            <p className="w-full rounded-xl bg-[#F7E7E2] p-3 text-center text-sm text-[#A8402F]">
+              {error}
+            </p>
+          )}
+
+          {draft.trim() && !listening && (
+            <button
+              onClick={parse}
+              className="rise w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+            >
+              Далі
+            </button>
           )}
         </div>
       </main>
     );
   }
 
-  /* ─────────── «НОРА ПОДУМАЛА» ─────────── */
+  /* ─────────── ЕКРАН ДОВІРИ: «Ось що я зрозуміла» ─────────── */
+  if (view === "confirm") {
+    return (
+      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-6 pb-10 pt-8">
+        <div className="flex flex-col items-center gap-2">
+          <Nora mood="idle" size={64} />
+          <h1 className="serif mt-3 text-center text-[24px] leading-snug text-[#191815]">
+            Ось що я зрозуміла
+          </h1>
+          <p className="text-sm text-[#7B7770]">Перевір, чи все правильно</p>
+        </div>
+
+        <ul className="mt-6 flex flex-col gap-2">
+          {pending.map((t, idx) => (
+            <li
+              key={t.id}
+              className="rise rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5"
+            >
+              {pendingEditIdx === idx ? (
+                <input
+                  value={pendingEditText}
+                  onChange={(e) => setPendingEditText(e.target.value)}
+                  onBlur={savePendingEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") savePendingEdit();
+                    if (e.key === "Escape") setPendingEditIdx(null);
+                  }}
+                  autoFocus
+                  className="w-full rounded-xl border border-[#C88A4E] bg-white p-2 text-[15px] text-[#191815] outline-none"
+                />
+              ) : (
+                <button
+                  onClick={() => {
+                    setPendingEditIdx(idx);
+                    setPendingEditText(t.title);
+                  }}
+                  className="flex w-full items-baseline justify-between gap-3 text-left"
+                >
+                  <span className="text-[15px] leading-snug text-[#191815]">
+                    {t.title}
+                  </span>
+                  {t.time && (
+                    <span className="flex-none text-sm font-medium text-[#191815]">
+                      {t.time}
+                    </span>
+                  )}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-center text-xs text-[#7B7770]">
+          Натисни на справу, щоб виправити текст
+        </p>
+
+        <div className="mt-6 flex flex-col gap-2">
+          <button
+            onClick={confirmPending}
+            className="w-full rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+          >
+            Все правильно
+          </button>
+          <button
+            onClick={retryCapture}
+            className="w-full rounded-2xl border border-[#E8E5DF] px-6 py-3.5 text-[15px] text-[#7B7770] transition active:scale-[0.98]"
+          >
+            Записати ще раз
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* ─────────── РЕЗУЛЬТАТ ─────────── */
   if (view === "thought") {
     const n = lastBatch.length;
-    const toToday = lastBatch.filter((t) => t.list === "today").length;
-    const burning = lastBatch.filter(isBurning).length;
-    const kept = n - toToday;
+    const attention = lastBatch.filter((t) => t.list === "today").length;
+    const kept = n - attention;
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16">
         <Nora mood="happy" size={96} />
         <div className="serif space-y-3 text-center text-[20px] leading-snug text-[#191815]">
+          <p className="rise-1">Готово.</p>
           <p className="rise-1">Я знайшла {spravPlural(n)}.</p>
-          {toToday > 0 ? (
-            <p className="rise-2">
-              {toToday === 1
-                ? "Одну з них варто зробити сьогодні"
-                : `${toToday} з них варто зробити сьогодні`}
-              {burning > 0
-                ? burning === 1
-                  ? " — одна вже горить, я поставила її наперед."
-                  : ` — ${burning} вже горять, я поставила їх наперед.`
-                : "."}
-            </p>
-          ) : (
-            <p className="rise-2">Сьогодні можна нічого з цього не робити.</p>
-          )}
+          <p className="rise-2">
+            {attention === 0
+              ? "Сьогодні жодна не термінова — все під контролем."
+              : attention === 1
+              ? "Одна з них потребує уваги сьогодні."
+              : `${attention} з них потребують уваги сьогодні.`}
+          </p>
           {kept > 0 && (
             <p className="rise-3 text-[#7B7770]">
-              Решту потримаю в списку. Вони нікуди не втечуть.
+              Решту збережу у списку — вони не загубляться.
             </p>
           )}
         </div>
@@ -482,7 +566,7 @@ export default function Home() {
           onClick={() => setView("today")}
           className="rise-4 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
         >
-          Покажи мій день
+          Показати мій день
         </button>
       </main>
     );
@@ -556,7 +640,7 @@ export default function Home() {
     );
   }
 
-  /* ─────────── «СЬОГОДНІ» (головний) ─────────── */
+  /* ─────────── «СЬОГОДНІ» ─────────── */
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-5 px-6 pb-32 pt-8">
       <header className="flex items-center gap-4">
@@ -666,13 +750,20 @@ function TaskRow({
   onEdit: () => void;
 }) {
   const burning = isBurning(task);
+  const important = task.priority === "high" && !burning;
+
+  // Прострочені — червонуватий акцент; важливі — теплий; решта — нейтральні.
+  const surface = burning
+    ? "border-l-4 border-[#E8E5DF] border-l-[#A8402F] bg-[#F7E7E2]"
+    : important
+    ? "border-[#C88A4E]/50 bg-[#F6DDB8]/30"
+    : "border-[#E8E5DF] bg-white/70";
+
   return (
     <li
-      className={`flex items-center gap-3 rounded-2xl border p-3.5 transition ${
-        burning
-          ? "border-l-4 border-[#E8E5DF] border-l-[#A8402F] bg-[#F7E7E2]"
-          : "border-[#E8E5DF] bg-white/70"
-      } ${task.done ? "opacity-45" : ""}`}
+      className={`flex items-center gap-3 rounded-2xl border p-3.5 transition ${surface} ${
+        task.done ? "opacity-45" : ""
+      }`}
     >
       <button
         onClick={() => onToggle(task.id)}
@@ -680,7 +771,7 @@ function TaskRow({
         className={`flex h-7 w-7 flex-none items-center justify-center rounded-full border-2 text-sm transition active:scale-90 ${
           task.done
             ? "border-[#6E9C86] bg-[#6E9C86]/15 text-[#6E9C86]"
-            : "border-[#E8E5DF] text-transparent"
+            : "border-[#D8D4CC] text-transparent"
         }`}
       >
         ✓
@@ -693,16 +784,22 @@ function TaskRow({
         >
           {task.title}
         </p>
-        <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#7B7770]">
-          {burning && (
-            <span className="rounded-full bg-[#A8402F]/10 px-2 py-0.5 font-medium text-[#A8402F]">
-              горить
-            </span>
-          )}
-          <span>{PRIORITY_LABEL[task.priority]}</span>
-          {task.time && <span>· {task.time}</span>}
-          {task.deadline && <span>· до {formatDeadline(task.deadline)}</span>}
-        </p>
+        {(burning || important || task.time || task.deadline) && (
+          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#7B7770]">
+            {burning && (
+              <span className="rounded-full bg-[#A8402F]/10 px-2 py-0.5 font-medium text-[#A8402F]">
+                прострочено
+              </span>
+            )}
+            {important && (
+              <span className="font-medium text-[#B5793A]">Важливо</span>
+            )}
+            {task.time && (
+              <span className="font-semibold text-[#191815]">{task.time}</span>
+            )}
+            {task.deadline && <span>до {formatDeadline(task.deadline)}</span>}
+          </p>
+        )}
       </div>
       <button
         onClick={onEdit}
