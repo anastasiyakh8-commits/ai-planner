@@ -8,7 +8,6 @@ type ParsedTask = {
   list: "today" | "inbox";
   time: string | null;
   deadline: string | null;
-  duration: number;
 };
 
 function kyivToday(): { iso: string; human: string } {
@@ -56,9 +55,7 @@ function sanitize(raw: unknown): ParsedTask[] {
       typeof o.deadline === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.deadline)
         ? o.deadline
         : null;
-    const rawDuration = typeof o.duration === "number" ? Math.round(o.duration) : 30;
-    const duration = rawDuration >= 5 && rawDuration <= 480 ? rawDuration : 30;
-    out.push({ title, priority, list, time, deadline, duration });
+    out.push({ title, priority, list, time, deadline });
   }
   return out;
 }
@@ -99,12 +96,11 @@ export async function POST(req: Request) {
 3. "priority": "high" | "medium" | "low" — оцінюй за терміновістю та важливістю зі слів користувача. Невпевнений — "medium".
 4. "list": "today" якщо задача явно на сьогодні (сказано "сьогодні", вказано час на сьогодні, або дедлайн сьогодні/прострочений) АБО якщо priority = "high" — важливе завжди потребує уваги сьогодні. Інакше "inbox".
 5. "time": "HH:MM" якщо вказано конкретний час, інакше null.
-6. "deadline": "YYYY-MM-DD" якщо згадано термін ("до пʼятниці", "завтра", "до 25-го") — обчисли реальну дату від сьогодні. НІКОЛИ не вигадуй дедлайн, якщо його немає в тексті — порожній (null) дедлайн це чесний і валідний стан.
-7. "duration": реалістична оцінка тривалості У ХВИЛИНАХ за типом задачі (дзвінок ≈ 15, купити щось ≈ 30, звіт/презентація ≈ 120-180). Якщо неясно — 30.
-8. Ігноруй те, що не є задачею (емоції, вигуки).
-9. Відповідай ТІЛЬКИ валідним JSON-масивом без жодного іншого тексту, без markdown, без пояснень.
+6. "deadline": "YYYY-MM-DD" якщо користувач сам назвав термін ("до пʼятниці", "завтра", "до 25-го") — обчисли реальну дату від сьогодні. НІКОЛИ не вигадуй дедлайн чи час, яких не було у введенні — порожній (null) стан це чесна і правильна відповідь.
+7. Ігноруй те, що не є задачею (емоції, вигуки).
+8. Відповідай ТІЛЬКИ валідним JSON-масивом без жодного іншого тексту, без markdown, без пояснень.
 
-Формат: [{"title":"...","priority":"...","list":"...","time":null,"deadline":null,"duration":30}]`;
+Формат: [{"title":"...","priority":"...","list":"...","time":null,"deadline":null}]`;
 
   try {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
