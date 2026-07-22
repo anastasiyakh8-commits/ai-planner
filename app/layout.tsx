@@ -1,21 +1,38 @@
 import type { Metadata, Viewport } from "next";
+import { Newsreader, Inter } from "next/font/google";
 import "./globals.css";
 
+const newsreader = Newsreader({
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500"],
+  style: ["normal", "italic"],
+  variable: "--font-serif",
+  display: "swap",
+});
+
+const inter = Inter({
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "AI Planner — хаос у голові → план на сьогодні",
-  description: "Вивали думки голосом або текстом — AI перетворить їх на структуровані задачі й план на сьогодні.",
+  title: "Нора — теплий провідник для твого дня",
+  description:
+    "Нора допомагає навести лад у справах: розкажи їй голосом або текстом, що на думці, і вона запропонує маршрут дня.",
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: "#0B1120",
+  themeColor: "#F6F5F2",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="uk">
+    <html lang="uk" className={`${newsreader.variable} ${inter.variable}`}>
       <body>{children}</body>
     </html>
   );
