@@ -118,6 +118,25 @@ function Nora({ mood, size }: { mood: Mood; size: number }) {
   );
 }
 
+function MicIcon({ size = 22 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0" />
+      <path d="M12 18v3" />
+    </svg>
+  );
+}
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [view, setView] = useState<View>("today");
@@ -138,7 +157,6 @@ export default function Home() {
   const recognitionRef = useRef<any>(null);
   const baseTextRef = useRef("");
 
-  // Завантаження
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -154,7 +172,6 @@ export default function Home() {
     setMounted(true);
   }, []);
 
-  // Збереження
   useEffect(() => {
     if (!mounted) return;
     try {
@@ -164,7 +181,6 @@ export default function Home() {
     }
   }, [tasks, mounted]);
 
-  // Ротація фраз обробки
   useEffect(() => {
     if (!parsing) return;
     setPhrase(0);
@@ -228,7 +244,6 @@ export default function Home() {
     }
   }, [draft, listening, stopListening]);
 
-  // Розбір: викликається з екрана Capture, результат — на екран довіри
   const parse = useCallback(async () => {
     const text = draft.trim();
     if (!text || parsing) return;
@@ -258,6 +273,8 @@ export default function Home() {
           i: number
         ) => ({
           ...t,
+          // Продуктове правило: важливе завжди потребує уваги сьогодні.
+          list: t.priority === "high" ? ("today" as const) : t.list,
           id: uid(),
           done: false,
           createdAt: Date.now() + i,
@@ -314,7 +331,7 @@ export default function Home() {
             ? "Усе виконано. Сьогодні ти молодець."
             : "Один крок зроблено. Гарний темп."
         );
-        setTimeout(() => setReaction(null), 3500);
+        setTimeout(() => setReaction(null), 3000);
       }
       return next;
     });
@@ -353,22 +370,15 @@ export default function Home() {
     : "idle";
 
   const firstOpen = todayList.find((t) => !t.done);
-  const coachComment = firstOpen
-    ? new Date().getHours() < 12
-      ? `Почни з «${firstOpen.title}», поки ранковий фокус із тобою.`
-      : new Date().getHours() < 18
-      ? `Найкращий наступний крок — «${firstOpen.title}».`
-      : `Якщо сил на одне — хай це буде «${firstOpen.title}». Решта почекає.`
-    : null;
 
   if (!mounted) return <main className="min-h-dvh" />;
 
   /* ─────────── WELCOME ─────────── */
   if (view === "welcome") {
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16">
+      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
         <Nora mood="idle" size={112} />
-        <div className="text-center">
+        <div>
           <p className="serif rise mb-6 text-xs uppercase tracking-[0.35em] text-[#7B7770]">
             НОРА
           </p>
@@ -396,16 +406,16 @@ export default function Home() {
   if (view === "capture") {
     if (parsing) {
       return (
-        <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16">
+        <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
           <Nora mood="thinking" size={112} />
-          <p className="serif rise text-center text-[18px] italic text-[#7B7770]">
+          <p className="serif rise text-[18px] italic text-[#7B7770]">
             {PROCESS_PHRASES[phrase]}
           </p>
         </main>
       );
     }
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-6 pb-10 pt-8">
+      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-6 pb-10 pt-6">
         <button
           onClick={() => {
             stopListening();
@@ -413,28 +423,26 @@ export default function Home() {
           }}
           className="self-start text-sm text-[#7B7770] transition active:text-[#191815]"
         >
-          ← Сьогодні
+          ← Мій день
         </button>
 
-        <div className="mt-8 flex flex-col items-center gap-6">
+        <div className="mt-6 flex flex-col items-center gap-6 text-center">
           <Nora mood={mood} size={96} />
-          <div className="text-center">
-            <p className="text-sm text-[#7B7770]">{greeting()}.</p>
-            <h1 className="serif mt-1 text-[24px] leading-snug text-[#191815]">
-              Що сьогодні займає твої думки?
-            </h1>
-          </div>
+          <h1 className="serif text-[24px] leading-snug text-[#191815]">
+            Що сьогодні займає твої думки?
+          </h1>
 
           {speechSupported && (
             <button
               onClick={toggleListening}
-              className={`w-full max-w-xs rounded-2xl px-6 py-4 text-[15px] font-medium transition active:scale-[0.98] ${
+              className={`flex w-full max-w-xs items-center justify-center gap-2 rounded-2xl px-6 py-4 text-[15px] font-medium transition active:scale-[0.98] ${
                 listening
                   ? "bg-[#B5793A] text-white"
                   : "bg-[#191815] text-[#F6F5F2]"
               }`}
             >
-              {listening ? "Я слухаю… натисни, коли закінчиш" : "🎙 Говорити"}
+              <MicIcon />
+              {listening ? "Слухаю… натисни, коли закінчиш" : "Говорити"}
             </button>
           )}
 
@@ -443,11 +451,11 @@ export default function Home() {
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Або запиши текстом…"
             rows={4}
-            className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-[15px] leading-relaxed text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
+            className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-left text-[15px] leading-relaxed text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
           />
 
           {error && (
-            <p className="w-full rounded-xl bg-[#F7E7E2] p-3 text-center text-sm text-[#A8402F]">
+            <p className="w-full rounded-xl bg-[#F7E7E2] p-3 text-sm text-[#A8402F]">
               {error}
             </p>
           )}
@@ -465,13 +473,13 @@ export default function Home() {
     );
   }
 
-  /* ─────────── ЕКРАН ДОВІРИ: «Ось що я зрозуміла» ─────────── */
+  /* ─────────── «Ось що я зрозуміла» ─────────── */
   if (view === "confirm") {
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-6 pb-10 pt-8">
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex flex-col items-center gap-2 text-center">
           <Nora mood="idle" size={64} />
-          <h1 className="serif mt-3 text-center text-[24px] leading-snug text-[#191815]">
+          <h1 className="serif mt-3 text-[24px] leading-snug text-[#191815]">
             Ось що я зрозуміла
           </h1>
           <p className="text-sm text-[#7B7770]">Перевір, чи все правильно</p>
@@ -482,6 +490,7 @@ export default function Home() {
             <li
               key={t.id}
               className="rise rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5"
+              style={{ animationDelay: `${idx * 70}ms` }}
             >
               {pendingEditIdx === idx ? (
                 <input
@@ -544,9 +553,9 @@ export default function Home() {
     const attention = lastBatch.filter((t) => t.list === "today").length;
     const kept = n - attention;
     return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16">
+      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
         <Nora mood="happy" size={96} />
-        <div className="serif space-y-3 text-center text-[20px] leading-snug text-[#191815]">
+        <div className="serif space-y-3 text-[20px] leading-snug text-[#191815]">
           <p className="rise-1">Готово.</p>
           <p className="rise-1">Я знайшла {spravPlural(n)}.</p>
           <p className="rise-2">
@@ -572,139 +581,131 @@ export default function Home() {
     );
   }
 
-  /* ─────────── «УСІ СПРАВИ» ─────────── */
-  if (view === "all") {
-    const tIso = todayIso();
-    const yIso = isoOfDaysAgo(1);
-    const groups: { label: string; items: Task[] }[] = [
-      { label: "Сьогодні", items: [] },
-      { label: "Вчора", items: [] },
-      { label: "Раніше", items: [] },
-    ];
-    for (const t of sortTasks(tasks)) {
-      const iso = dateIsoOf(t.createdAt);
-      if (iso === tIso) groups[0].items.push(t);
-      else if (iso === yIso) groups[1].items.push(t);
-      else groups[2].items.push(t);
-    }
-    return (
-      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-6 px-6 pb-32 pt-8">
-        <button
-          onClick={() => setView("today")}
-          className="self-start text-sm text-[#7B7770] transition active:text-[#191815]"
-        >
-          ← Сьогодні
-        </button>
-        <h1 className="serif text-[26px] text-[#191815]">Усі справи</h1>
-        {tasks.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-[#E8E5DF] p-5 text-center text-sm text-[#7B7770]">
-            Поки тут порожньо. Розкажи мені, що на думці.
-          </p>
-        )}
-        {groups.map(
-          (g) =>
-            g.items.length > 0 && (
-              <section key={g.label}>
-                <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-[#7B7770]">
-                  {g.label}
-                </h2>
-                <ul className="flex flex-col gap-2">
-                  {g.items.map((t) => (
-                    <TaskRow
-                      key={t.id}
-                      task={t}
-                      onToggle={toggleDone}
-                      onEdit={() => setEditing(t)}
-                    />
-                  ))}
-                </ul>
-              </section>
-            )
-        )}
-        <MicFab
-          onClick={() => {
-            setDraft("");
-            setView("capture");
-          }}
-        />
-        {editing && (
-          <EditSheet
-            task={editing}
-            onClose={() => setEditing(null)}
-            onSave={saveTask}
-            onPostpone={postpone}
-            onDelete={removeTask}
-          />
-        )}
-      </main>
-    );
+  /* ─────────── ГОЛОВНИЙ ЕКРАН: вкладки «Мій день» / «Усі справи» ─────────── */
+  const isToday = view === "today";
+
+  const tIso = todayIso();
+  const yIso = isoOfDaysAgo(1);
+  const groups: { label: string; items: Task[] }[] = [
+    { label: "Сьогодні", items: [] },
+    { label: "Вчора", items: [] },
+    { label: "Раніше", items: [] },
+  ];
+  for (const t of sortTasks(tasks)) {
+    const iso = dateIsoOf(t.createdAt);
+    if (iso === tIso) groups[0].items.push(t);
+    else if (iso === yIso) groups[1].items.push(t);
+    else groups[2].items.push(t);
   }
 
-  /* ─────────── «СЬОГОДНІ» ─────────── */
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-5 px-6 pb-32 pt-8">
-      <header className="flex items-center gap-4">
-        <Nora mood={mood} size={48} />
-        <div>
-          <p className="text-sm text-[#7B7770]">{greeting()}.</p>
-          <h1 className="serif text-[26px] leading-tight text-[#191815]">
-            Сьогодні
-          </h1>
-        </div>
+      {/* Хедер: усе по центру */}
+      <header className="flex flex-col items-center gap-2 text-center">
+        <Nora mood={mood} size={56} />
+        <p className="text-sm text-[#7B7770]">{greeting()}.</p>
       </header>
 
-      {reaction && (
-        <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
-          {reaction}
-        </p>
-      )}
-
-      {allDone && !reaction && (
-        <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
-          Усе виконано. Сьогодні ти молодець.
-        </p>
-      )}
-
-      {coachComment && !allDone && (
-        <p className="serif text-[15px] italic leading-relaxed text-[#7B7770]">
-          {coachComment}
-        </p>
-      )}
-
-      {todayList.length === 0 ? (
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
-          <p className="serif text-[17px] leading-relaxed text-[#191815]">
-            Поки тут тихо.
-          </p>
-          <p className="text-sm text-[#7B7770]">
-            Розкажи мені, що сьогодні на думці — далі моя робота.
-          </p>
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {todayList.map((t) => (
-            <TaskRow
-              key={t.id}
-              task={t}
-              onToggle={toggleDone}
-              onEdit={() => setEditing(t)}
-            />
-          ))}
-        </ul>
-      )}
-
-      {totalCount > todayList.length && (
+      {/* Вкладки */}
+      <nav className="relative grid grid-cols-2 rounded-2xl border border-[#E8E5DF] bg-white/60 p-1">
+        <div
+          className={`absolute bottom-1 top-1 w-[calc(50%-4px)] rounded-xl bg-[#191815] transition-transform duration-300 ease-out ${
+            isToday ? "translate-x-1" : "translate-x-[calc(100%+3px)]"
+          }`}
+          aria-hidden
+        />
+        <button
+          onClick={() => setView("today")}
+          className={`relative z-10 py-3 text-sm font-medium transition-colors duration-300 ${
+            isToday ? "text-[#F6F5F2]" : "text-[#7B7770]"
+          }`}
+        >
+          Мій день{todayList.length > 0 ? ` · ${todayList.length}` : ""}
+        </button>
         <button
           onClick={() => setView("all")}
-          className="self-center text-sm text-[#7B7770] underline-offset-4 transition active:text-[#191815]"
+          className={`relative z-10 py-3 text-sm font-medium transition-colors duration-300 ${
+            !isToday ? "text-[#F6F5F2]" : "text-[#7B7770]"
+          }`}
         >
-          Усі справи ({totalCount}) →
+          Усі справи{totalCount > 0 ? ` · ${totalCount}` : ""}
         </button>
-      )}
+      </nav>
 
-      <footer className="mt-auto pt-6 text-center text-[11px] text-[#7B7770]/70">
-        Твої справи залишаються на цьому пристрої
-      </footer>
+      {/* Контент вкладки */}
+      <div key={view} className="tab-in flex flex-col gap-4">
+        {isToday ? (
+          <>
+            {(reaction || allDone) && (
+              <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
+                {reaction || "Усе виконано. Сьогодні ти молодець."}
+              </p>
+            )}
+
+            {firstOpen && !allDone && !reaction && (
+              <p className="text-center text-sm text-[#7B7770]">
+                Почни з:{" "}
+                <span className="font-medium text-[#191815]">
+                  {firstOpen.title}
+                </span>
+              </p>
+            )}
+
+            {todayList.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
+                <p className="serif text-[17px] text-[#191815]">Поки тихо.</p>
+                <p className="mt-1 text-sm text-[#7B7770]">
+                  Розкажи, що на думці.
+                </p>
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {todayList.map((t, i) => (
+                  <TaskRow
+                    key={t.id}
+                    task={t}
+                    index={i}
+                    onToggle={toggleDone}
+                    onEdit={() => setEditing(t)}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
+        ) : (
+          <>
+            {tasks.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
+                <p className="serif text-[17px] text-[#191815]">Поки тихо.</p>
+                <p className="mt-1 text-sm text-[#7B7770]">
+                  Розкажи, що на думці.
+                </p>
+              </div>
+            )}
+            {groups.map(
+              (g) =>
+                g.items.length > 0 && (
+                  <section key={g.label}>
+                    <h2 className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-[#7B7770]">
+                      {g.label}
+                    </h2>
+                    <ul className="flex flex-col gap-2">
+                      {g.items.map((t, i) => (
+                        <TaskRow
+                          key={t.id}
+                          task={t}
+                          index={i}
+                          onToggle={toggleDone}
+                          onEdit={() => setEditing(t)}
+                        />
+                      ))}
+                    </ul>
+                  </section>
+                )
+            )}
+          </>
+        )}
+      </div>
 
       <MicFab
         onClick={() => {
@@ -733,44 +734,46 @@ function MicFab({ onClick }: { onClick: () => void }) {
     <button
       onClick={onClick}
       aria-label="Розповісти Норі"
-      className="fixed bottom-6 left-1/2 z-40 flex h-16 w-16 -translate-x-1/2 items-center justify-center rounded-full bg-[#191815] text-2xl text-[#F6F5F2] shadow-lg shadow-black/20 transition active:scale-95"
+      className="fixed bottom-6 left-1/2 z-40 flex h-16 w-16 -translate-x-1/2 items-center justify-center rounded-full bg-[#191815] text-[#F6F5F2] shadow-lg shadow-black/25 transition active:scale-95"
     >
-      🎙
+      <MicIcon size={26} />
     </button>
   );
 }
 
 function TaskRow({
   task,
+  index,
   onToggle,
   onEdit,
 }: {
   task: Task;
+  index: number;
   onToggle: (id: string) => void;
   onEdit: () => void;
 }) {
   const burning = isBurning(task);
   const important = task.priority === "high" && !burning;
 
-  // Прострочені — червонуватий акцент; важливі — теплий; решта — нейтральні.
   const surface = burning
     ? "border-l-4 border-[#E8E5DF] border-l-[#A8402F] bg-[#F7E7E2]"
     : important
-    ? "border-[#C88A4E]/50 bg-[#F6DDB8]/30"
+    ? "border-[#C88A4E]/60 bg-[#F6DDB8]/35"
     : "border-[#E8E5DF] bg-white/70";
 
   return (
     <li
-      className={`flex items-center gap-3 rounded-2xl border p-3.5 transition ${surface} ${
+      className={`rise flex items-center gap-3 rounded-2xl border p-3.5 transition ${surface} ${
         task.done ? "opacity-45" : ""
       }`}
+      style={{ animationDelay: `${index * 60}ms` }}
     >
       <button
         onClick={() => onToggle(task.id)}
         aria-label="Виконано"
         className={`flex h-7 w-7 flex-none items-center justify-center rounded-full border-2 text-sm transition active:scale-90 ${
           task.done
-            ? "border-[#6E9C86] bg-[#6E9C86]/15 text-[#6E9C86]"
+            ? "checkpop border-[#6E9C86] bg-[#6E9C86]/15 text-[#6E9C86]"
             : "border-[#D8D4CC] text-transparent"
         }`}
       >
@@ -888,6 +891,8 @@ function EditSheet({
               time: time || null,
               deadline: deadline || null,
               priority,
+              // Зміна пріоритету на «Важливо» переносить справу в «Мій день»
+              list: priority === "high" ? "today" : task.list,
             })
           }
           className="mt-4 w-full rounded-2xl bg-[#191815] py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
