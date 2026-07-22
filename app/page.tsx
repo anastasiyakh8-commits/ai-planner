@@ -59,7 +59,37 @@ function greeting(): string {
   if (h >= 5 && h < 12) return "Доброго ранку";
   if (h >= 12 && h < 18) return "Доброго дня";
   if (h >= 18 && h < 23) return "Доброго вечора";
-  return "Пізня година";
+  return "Не спиться?";
+}
+
+/* М'яке виявлення дублікатів: схожість рядків за біграмами (Dice) */
+function bigramCounts(s: string): Map<string, number> {
+  const m = new Map<string, number>();
+  for (let i = 0; i < s.length - 1; i++) {
+    const bg = s.slice(i, i + 2);
+    m.set(bg, (m.get(bg) || 0) + 1);
+  }
+  return m;
+}
+
+function looksDuplicate(a: string, b: string): boolean {
+  const na = a.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  const nb = b.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ma = bigramCounts(na);
+  const mb = bigramCounts(nb);
+  let inter = 0;
+  let totalA = 0;
+  let totalB = 0;
+  ma.forEach((c) => (totalA += c));
+  mb.forEach((c) => (totalB += c));
+  ma.forEach((c, bg) => {
+    const cb = mb.get(bg);
+    if (cb) inter += Math.min(c, cb);
+  });
+  if (totalA + totalB === 0) return false;
+  return (2 * inter) / (totalA + totalB) >= 0.7;
 }
 
 function spravPlural(n: number): string {
@@ -382,6 +412,11 @@ export default function Home() {
     setEditing(null);
   }, []);
 
+  // Закрити день: виконане зроблене — прибираємо його зі списків
+  const clearDone = useCallback(() => {
+    setTasks((prev) => prev.filter((t) => !t.done));
+  }, []);
+
   const startCreate = useCallback(() => {
     setEditing({
       id: uid(),
@@ -564,7 +599,15 @@ export default function Home() {
         </div>
 
         <ul className="mt-6 flex flex-col gap-2">
-          {pending.map((t, idx) => (
+          {pending.map((t, idx) => {
+            const dupe =
+              tasks.some(
+                (x) => !x.done && looksDuplicate(x.title, t.title)
+              ) ||
+              pending.some(
+                (x, j) => j < idx && looksDuplicate(x.title, t.title)
+              );
+            return (
             <li
               key={t.id}
               className="rise rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5"
@@ -625,10 +668,16 @@ export default function Home() {
                       </span>
                     )}
                   </div>
+                  {dupe && (
+                    <p className="mt-1.5 text-xs text-[#B5793A]">
+                      Схоже, така справа вже є — перевір, чи не дубль
+                    </p>
+                  )}
                 </>
               )}
             </li>
-          ))}
+            );
+          })}
         </ul>
         <p className="mt-2 text-center text-xs text-[#7B7770]">
           Тапни назву чи мітку — усе можна змінити
@@ -684,9 +733,11 @@ export default function Home() {
     .filter((t) => isBurning(t))
     .sort((a, b) => ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
   const withDeadline = [...tasks]
-    .filter((t) => !isBurning(t) && t.deadline)
+    .filter((t) => !t.done && !isBurning(t) && t.deadline)
     .sort((a, b) => ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
-  const noDeadline = sortTasks(tasks.filter((t) => !t.deadline && !isBurning(t)));
+  const noDeadline = sortTasks(
+    tasks.filter((t) => !t.done && !t.deadline && !isBurning(t))
+  );
   const groups: { label: string; items: Task[]; alert?: boolean }[] = [
     { label: "Прострочено", items: overdue, alert: true },
     { label: "З дедлайном", items: withDeadline },
@@ -748,9 +799,16 @@ export default function Home() {
             )}
 
             {(reaction || allDone) && (
-              <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
-                {reaction || "Усе виконано. Сьогодні ти молодець."}
-              </p>
+              <div className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center">
+                <p className="text-sm text-[#6E9C86]">
+                  {reaction || "Усе виконано. Сьогодні ти молодець."}
+                </p>
+                {allDone && (
+                  <p className="mt-1 text-xs text-[#7B7770]">
+                    Можеш видихнути. Якщо щось спливе — я поруч 🎙
+                  </p>
+                )}
+              </div>
             )}
 
             {firstOpen && !allDone && !reaction && (
@@ -767,17 +825,27 @@ export default function Home() {
                 </p>
               </div>
             ) : (
-              <ul className="flex flex-col gap-2">
-                {dayList.map((t, i) => (
-                  <TaskRow
-                    key={t.id}
-                    task={t}
-                    index={i}
-                    onToggle={toggleDone}
-                    onEdit={() => setEditing(t)}
-                  />
-                ))}
-              </ul>
+              <>
+                <ul className="flex flex-col gap-2">
+                  {dayList.map((t, i) => (
+                    <TaskRow
+                      key={t.id}
+                      task={t}
+                      index={i}
+                      onToggle={toggleDone}
+                      onEdit={() => setEditing(t)}
+                    />
+                  ))}
+                </ul>
+                {doneCount > 0 && (
+                  <button
+                    onClick={clearDone}
+                    className="self-center text-sm text-[#7B7770] underline underline-offset-4 transition active:text-[#191815]"
+                  >
+                    {allDone ? "Закрити день" : "Прибрати виконані"}
+                  </button>
+                )}
+              </>
             )}
           </>
         ) : (
@@ -841,6 +909,7 @@ export default function Home() {
       {editing && (
         <EditSheet
           task={editing}
+          speechSupported={speechSupported}
           onClose={() => setEditing(null)}
           onSave={saveTask}
           onPostpone={postpone}
@@ -907,7 +976,12 @@ function TaskRow({
       >
         ✓
       </button>
-      <div className="min-w-0 flex-1">
+      <div
+        className="min-w-0 flex-1 cursor-pointer"
+        onClick={onEdit}
+        role="button"
+        aria-label="Редагувати справу"
+      >
         <p
           className={`text-[15px] leading-snug text-[#191815] ${
             task.done ? "line-through" : ""
@@ -955,6 +1029,7 @@ function TaskRow({
 
 function EditSheet({
   task,
+  speechSupported,
   onClose,
   onSave,
   onPostpone,
@@ -962,6 +1037,7 @@ function EditSheet({
   onDelete,
 }: {
   task: Task;
+  speechSupported: boolean;
   onClose: () => void;
   onSave: (t: Task) => void;
   onPostpone: (id: string) => void;
@@ -973,8 +1049,51 @@ function EditSheet({
   const [deadline, setDeadline] = useState(task.deadline || "");
   const [priority, setPriority] = useState<Priority>(task.priority);
   const [confirmPostpone, setConfirmPostpone] = useState(false);
+  const [dictating, setDictating] = useState(false);
+  const sheetRecRef = useRef<any>(null);
+  const titleBaseRef = useRef("");
   const isNew = task.title === "";
   const burning = isBurning(task);
+
+  const toggleDictate = useCallback(() => {
+    if (dictating) {
+      try {
+        sheetRecRef.current?.stop();
+      } catch {
+        // ignore
+      }
+      setDictating(false);
+      return;
+    }
+    const SR =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.lang = "uk-UA";
+    rec.continuous = false;
+    rec.interimResults = true;
+    titleBaseRef.current = title ? title.trimEnd() + " " : "";
+    rec.onresult = (e: any) => {
+      let finalText = "";
+      let interim = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      setTitle(titleBaseRef.current + finalText + interim);
+    };
+    rec.onend = () => setDictating(false);
+    rec.onerror = () => setDictating(false);
+    sheetRecRef.current = rec;
+    try {
+      rec.start();
+      setDictating(true);
+    } catch {
+      setDictating(false);
+    }
+  }, [dictating, title]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/30" onClick={onClose}>
@@ -988,13 +1107,33 @@ function EditSheet({
             Нова справа
           </p>
         )}
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Що потрібно зробити?"
-          autoFocus={isNew}
-          className="w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5 text-[15px] text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
-        />
+        <div className="relative">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Що потрібно зробити?"
+            autoFocus={isNew}
+            className="w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5 pr-12 text-[15px] text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
+          />
+          {speechSupported && (
+            <button
+              onClick={toggleDictate}
+              aria-label={dictating ? "Зупинити диктування" : "Надиктувати назву"}
+              className={`absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full transition active:scale-95 ${
+                dictating
+                  ? "animate-pulse bg-[#B5793A] text-white"
+                  : "bg-[#E8E5DF]/70 text-[#7B7770]"
+              }`}
+            >
+              <MicIcon size={18} />
+            </button>
+          )}
+        </div>
+        {dictating && (
+          <p className="mt-1.5 text-center text-xs text-[#B5793A]">
+            Слухаю… кажи назву справи
+          </p>
+        )}
         <div className="mt-3 flex gap-3">
           <label className="flex-1 text-xs text-[#7B7770]">
             Час
