@@ -1,8 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Newsreader, Inter } from "next/font/google";
+import {Literata, Inter } from "next/font/google";
 import "./globals.css";
 
-const newsreader = Newsreader({
+const newsreader = Literata({
   subsets: ["latin", "cyrillic"],
   weight: ["400", "500"],
   style: ["normal", "italic"],
