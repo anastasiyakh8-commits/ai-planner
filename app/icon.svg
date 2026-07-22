@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="nora" cx="38%" cy="32%" r="78%">
+      <stop offset="0%" stop-color="#F6DDB8"/>
+      <stop offset="78%" stop-color="#C88A4E"/>
+      <stop offset="100%" stop-color="#B5793A"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="25" fill="url(#nora)"/>
+  <circle cx="32" cy="32" r="29" fill="none" stroke="#C88A4E" stroke-opacity="0.35" stroke-width="2"/>
+</svg>

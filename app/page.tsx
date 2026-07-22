@@ -11,15 +11,8 @@ type Task = {
   list: "today" | "inbox";
   time: string | null;
   deadline: string | null;
-  duration: number;
   done: boolean;
   createdAt: number;
-};
-
-type Plan = {
-  date: string; // YYYY-MM-DD
-  availableMin: number;
-  ids: string[];
 };
 
 type View = "welcome" | "today" | "all" | "capture" | "confirm" | "thought";
@@ -27,8 +20,6 @@ type Mood = "idle" | "listening" | "thinking" | "happy" | "calm";
 
 const STORAGE_KEY = "ai-planner-tasks-v1";
 const SEEN_KEY = "nora_seen";
-const PLAN_KEY = "nora-plan-v1";
-const HOURS_KEY = "nora-hours-default";
 
 const PROCESS_PHRASES = [
   "Розділяю на окремі справи…",
@@ -36,13 +27,8 @@ const PROCESS_PHRASES = [
   "Формую твій план…",
 ];
 
-const PLAN_BUFFER = 0.85; // буфер 15% на переключення й непередбачуване
-
-const PRIORITY_LABEL: Record<Priority, string> = {
-  high: "Важливо",
-  medium: "Вдень",
-  low: "Гнучко",
-};
+const EXAMPLE_DUMP =
+  "Підготувати презентацію для інвесторів до пʼятниці, подзвонити підряднику о 14:00, купити подарунок мамі та розібрати пошту";
 
 const PRIORITY_ORDER: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
@@ -58,18 +44,6 @@ function todayIso(): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
-}
-
-function formatDuration(min: number): string {
-  if (min < 60) return `${min} хв`;
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return m > 0 ? `${h} год ${m} хв` : `${h} год`;
-}
-
-function formatHours(min: number): string {
-  const h = min / 60;
-  return Number.isInteger(h) ? `${h} год` : `${h.toFixed(1)} год`;
 }
 
 function formatDeadline(iso: string): string {
@@ -96,6 +70,14 @@ function spravPlural(n: number): string {
   return `${n} справ`;
 }
 
+function spravCount(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} справа`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} справи`;
+  return `${n} справ`;
+}
+
 function isBurning(t: Task): boolean {
   return Boolean(t.deadline && t.deadline <= todayIso() && !t.done);
 }
@@ -116,76 +98,14 @@ function sortTasks(list: Task[]): Task[] {
   });
 }
 
-/* Планувальник дня — правила спека:
-   прострочені → найближчі дедлайни → пріоритет; сума ≤ час × 0.85;
-   важке й пріоритетне — спершу, дрібне — під кінець. */
-function buildPlan(
-  tasks: Task[],
-  availableMin: number
-): { ids: string[]; leftout: { id: string; reason: string }[] } {
-  const budget = Math.floor(availableMin * PLAN_BUFFER);
-  const active = tasks.filter((t) => !t.done);
-
-  const rank = (t: Task): number => {
-    if (isBurning(t)) return 0;
-    if (t.deadline) return 1;
-    if (t.priority === "high" || t.list === "today") return 2;
-    return 3 + PRIORITY_ORDER[t.priority];
-  };
-
-  const candidates = [...active].sort((a, b) => {
-    const ra = rank(a);
-    const rb = rank(b);
-    if (ra !== rb) return ra - rb;
-    if (a.deadline && b.deadline && a.deadline !== b.deadline)
-      return a.deadline < b.deadline ? -1 : 1;
-    if (PRIORITY_ORDER[a.priority] !== PRIORITY_ORDER[b.priority])
-      return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-    return b.duration - a.duration; // важке — вище
-  });
-
-  const ids: string[] = [];
-  const leftout: { id: string; reason: string }[] = [];
-  let sum = 0;
-  const farIso = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 3);
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${d.getFullYear()}-${m}-${day}`;
-  })();
-
-  for (const t of candidates) {
-    if (sum + t.duration <= budget) {
-      ids.push(t.id);
-      sum += t.duration;
-    } else if (isBurning(t)) {
-      // прострочене не ховаємо ніколи — воно важливіше за буфер
-      ids.push(t.id);
-      sum += t.duration;
-    } else {
-      let reason = "не вмістилась у твій час";
-      if (t.deadline && t.deadline > farIso)
-        reason = `дедлайн аж ${formatDeadline(t.deadline)} — може почекати`;
-      else if (t.priority === "low") reason = "гнучка — почекає без шкоди";
-      leftout.push({ id: t.id, reason });
-    }
-  }
-
-  // Порядок у дні: прострочене → важке/пріоритетне → дрібне під кінець
-  const planned = ids
-    .map((id) => active.find((t) => t.id === id))
-    .filter(Boolean) as Task[];
-  planned.sort((a, b) => {
-    const ab = isBurning(a) ? 0 : 1;
-    const bb = isBurning(b) ? 0 : 1;
-    if (ab !== bb) return ab - bb;
-    if (PRIORITY_ORDER[a.priority] !== PRIORITY_ORDER[b.priority])
-      return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
-    return b.duration - a.duration;
-  });
-
-  return { ids: planned.map((t) => t.id), leftout };
+/* Одна рекомендація Нори — на основі фактів, а не вигаданих оцінок */
+function recommendReason(t: Task): string {
+  if (isBurning(t)) return "вона прострочена, краще закрити її першою";
+  if (t.priority === "high" && t.deadline)
+    return "вона важлива і має найближчий дедлайн";
+  if (t.priority === "high") return "ти позначила її важливою";
+  if (t.time) return `вона привʼязана до часу ${t.time}`;
+  return "вона перша в черзі";
 }
 
 function Nora({ mood, size }: { mood: Mood; size: number }) {
@@ -221,10 +141,6 @@ export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [view, setView] = useState<View>("today");
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [plan, setPlan] = useState<Plan | null>(null);
-  const [leftout, setLeftout] = useState<{ id: string; reason: string }[]>([]);
-  const [leftoutOpen, setLeftoutOpen] = useState(false);
-  const [hours, setHours] = useState(360); // хвилини, дефолт 6 год
   const [draft, setDraft] = useState("");
   const [listening, setListening] = useState(false);
   const [speechSupported, setSpeechSupported] = useState(false);
@@ -244,18 +160,7 @@ export default function Home() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as Array<Partial<Task>>;
-        setTasks(parsed.map((t) => ({ duration: 30, ...t }) as Task));
-      }
-      const savedPlan = localStorage.getItem(PLAN_KEY);
-      if (savedPlan) {
-        const p = JSON.parse(savedPlan) as Plan;
-        // План минулого дня не діє — Today це проєкція, не сховище
-        if (p.date === todayIso()) setPlan(p);
-      }
-      const savedHours = localStorage.getItem(HOURS_KEY);
-      if (savedHours) setHours(parseInt(savedHours, 10) || 360);
+      if (saved) setTasks(JSON.parse(saved));
       if (localStorage.getItem(SEEN_KEY) !== "1") setView("welcome");
     } catch {
       // ignore
@@ -277,16 +182,6 @@ export default function Home() {
   }, [tasks, mounted]);
 
   useEffect(() => {
-    if (!mounted) return;
-    try {
-      if (plan) localStorage.setItem(PLAN_KEY, JSON.stringify(plan));
-      else localStorage.removeItem(PLAN_KEY);
-    } catch {
-      // ignore
-    }
-  }, [plan, mounted]);
-
-  useEffect(() => {
     if (!parsing) return;
     setPhrase(0);
     const t = setInterval(
@@ -302,45 +197,6 @@ export default function Home() {
     } catch {
       // ignore
     }
-  }, []);
-
-  const changeHours = useCallback((delta: number) => {
-    setHours((h) => {
-      const next = Math.min(720, Math.max(60, h + delta));
-      try {
-        localStorage.setItem(HOURS_KEY, String(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
-
-  const makePlan = useCallback(() => {
-    const { ids, leftout: lo } = buildPlan(tasks, hours);
-    setPlan({ date: todayIso(), availableMin: hours, ids });
-    setLeftout(lo);
-    setLeftoutOpen(false);
-  }, [tasks, hours]);
-
-  const resetPlan = useCallback(() => {
-    setPlan(null);
-    setLeftout([]);
-  }, []);
-
-  const removeFromPlan = useCallback((id: string) => {
-    setPlan((p) =>
-      p ? { ...p, ids: p.ids.filter((x) => x !== id) } : p
-    );
-  }, []);
-
-  const addToPlan = useCallback((id: string) => {
-    setPlan((p) => {
-      if (!p) return p;
-      if (p.ids.includes(id)) return p;
-      return { ...p, ids: [...p.ids, id] };
-    });
-    setLeftout((lo) => lo.filter((x) => x.id !== id));
   }, []);
 
   const stopListening = useCallback(() => {
@@ -413,12 +269,14 @@ export default function Home() {
             list: Task["list"];
             time: string | null;
             deadline: string | null;
-            duration?: number;
           },
           i: number
         ) => ({
-          ...t,
-          duration: typeof t.duration === "number" ? t.duration : 30,
+          title: t.title,
+          priority: t.priority,
+          time: t.time,
+          deadline: t.deadline,
+          // Продуктове правило: важливе завжди потребує уваги сьогодні.
           list: t.priority === "high" ? ("today" as const) : t.list,
           id: uid(),
           done: false,
@@ -459,16 +317,23 @@ export default function Home() {
     );
   }, []);
 
+  const togglePendingImportant = useCallback((idx: number) => {
+    setPending((prev) =>
+      prev.map((t, i) => {
+        if (i !== idx) return t;
+        const nowHigh = t.priority !== "high";
+        return {
+          ...t,
+          priority: nowHigh ? ("high" as const) : ("medium" as const),
+          // «Важливо» тягне справу в «Мій день»; зняття позначки нічого не забирає
+          list: nowHigh ? ("today" as const) : t.list,
+        };
+      })
+    );
+  }, []);
+
   const confirmPending = useCallback(() => {
     setTasks((prev) => [...prev, ...pending]);
-    // Якщо план на сьогодні вже є — термінове з нового дампу заходить у нього
-    setPlan((p) => {
-      if (!p) return p;
-      const urgent = pending
-        .filter((t) => t.list === "today" || isBurning(t))
-        .map((t) => t.id);
-      return urgent.length ? { ...p, ids: [...p.ids, ...urgent] } : p;
-    });
     setLastBatch(pending);
     setPending([]);
     setDraft("");
@@ -482,44 +347,28 @@ export default function Home() {
     setView("capture");
   }, []);
 
-  const moveToToday = useCallback(
-    (id: string) => {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, list: "today" as const } : t))
-      );
-      addToPlan(id);
-      setEditing(null);
-    },
-    [addToPlan]
-  );
-
-  const toggleDone = useCallback(
-    (id: string) => {
-      setTasks((prev) => {
-        const next = prev.map((t) =>
-          t.id === id ? { ...t, done: !t.done } : t
+  const toggleDone = useCallback((id: string) => {
+    setTasks((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t));
+      const t = next.find((x) => x.id === id);
+      if (t?.done) {
+        const dayList = next.filter(
+          (x) => x.list === "today" || isBurning(x)
         );
-        const t = next.find((x) => x.id === id);
-        if (t?.done) {
-          const planIds = plan?.ids || [];
-          const planned = next.filter((x) => planIds.includes(x.id));
-          const left = planned.filter((x) => !x.done).length;
-          setReaction(
-            left === 0 && planned.length > 0
-              ? "Усе виконано. Сьогодні ти молодець."
-              : "Один крок зроблено. Гарний темп."
-          );
-          setTimeout(() => setReaction(null), 3000);
-        }
-        return next;
-      });
-    },
-    [plan]
-  );
+        const left = dayList.filter((x) => !x.done).length;
+        setReaction(
+          left === 0 && dayList.length > 0
+            ? "Усе виконано. Сьогодні ти молодець."
+            : "Один крок зроблено. Гарний темп."
+        );
+        setTimeout(() => setReaction(null), 3000);
+      }
+      return next;
+    });
+  }, []);
 
   const removeTask = useCallback((id: string) => {
     setTasks((prev) => prev.filter((t) => t.id !== id));
-    setPlan((p) => (p ? { ...p, ids: p.ids.filter((x) => x !== id) } : p));
     setEditing(null);
   }, []);
 
@@ -541,36 +390,45 @@ export default function Home() {
       list: "inbox",
       time: null,
       deadline: null,
-      duration: 30,
       done: false,
       createdAt: Date.now(),
     });
   }, []);
 
-  const postpone = useCallback(
-    (id: string) => {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, list: "inbox" as const } : t))
-      );
-      removeFromPlan(id);
-      setEditing(null);
-    },
-    [removeFromPlan]
-  );
+  const moveToToday = useCallback((id: string) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, list: "today" as const } : t))
+    );
+    setEditing(null);
+  }, []);
+
+  // «Відкласти на потім» знімає позначку «Важливо» — інакше правило
+  // «важливе завжди в Моєму дні» повертало б задачу назад.
+  const postpone = useCallback((id: string) => {
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              list: "inbox" as const,
+              priority: t.priority === "high" ? ("medium" as const) : t.priority,
+            }
+          : t
+      )
+    );
+    setEditing(null);
+  }, []);
 
   const activeTasks = tasks.filter((t) => !t.done);
-  const plannedTasks = (plan?.ids || [])
-    .map((id) => tasks.find((t) => t.id === id))
-    .filter((t): t is Task => Boolean(t));
-  const plannedOpen = plannedTasks.filter((t) => !t.done);
-  const doneCount = plannedTasks.filter((t) => t.done).length;
-  const allDone = plannedTasks.length > 0 && doneCount === plannedTasks.length;
-  const plannedTotalMin = plannedTasks.reduce((s, t) => s + t.duration, 0);
-  const doneMin = plannedTasks
-    .filter((t) => t.done)
-    .reduce((s, t) => s + t.duration, 0);
+  // «Мій день» = обране в день + прострочене (його не ховаємо ніколи)
+  const dayList = sortTasks(
+    tasks.filter((t) => t.list === "today" || isBurning(t))
+  );
+  const doneCount = dayList.filter((t) => t.done).length;
+  const allDone = dayList.length > 0 && doneCount === dayList.length;
   const progressPct =
-    plannedTotalMin > 0 ? Math.round((doneMin / plannedTotalMin) * 100) : 0;
+    dayList.length > 0 ? Math.round((doneCount / dayList.length) * 100) : 0;
+  const firstOpen = dayList.find((t) => !t.done);
 
   const mood: Mood = parsing
     ? "thinking"
@@ -679,6 +537,15 @@ export default function Home() {
               Далі
             </button>
           )}
+
+          {!draft.trim() && !listening && (
+            <button
+              onClick={() => setDraft(EXAMPLE_DUMP)}
+              className="text-sm text-[#7B7770] underline-offset-4 transition active:text-[#191815]"
+            >
+              ✨ Заповнити прикладом
+            </button>
+          )}
         </div>
       </main>
     );
@@ -722,18 +589,11 @@ export default function Home() {
                       setPendingEditIdx(idx);
                       setPendingEditText(t.title);
                     }}
-                    className="flex w-full items-baseline justify-between gap-3 text-left"
+                    className="w-full text-left text-[15px] leading-snug text-[#191815]"
                   >
-                    <span className="text-[15px] leading-snug text-[#191815]">
-                      {t.title}
-                    </span>
-                    {t.time && (
-                      <span className="flex-none text-sm font-medium text-[#191815]">
-                        {t.time}
-                      </span>
-                    )}
+                    {t.title}
                   </button>
-                  <div className="mt-2 flex items-center gap-2">
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => togglePendingDay(idx)}
                       className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
@@ -744,14 +604,26 @@ export default function Home() {
                     >
                       {t.list === "today" ? "Мій день ✓" : "На потім"}
                     </button>
-                    {t.priority === "high" && (
-                      <span className="text-xs font-medium text-[#B5793A]">
-                        Важливо
+                    <button
+                      onClick={() => togglePendingImportant(idx)}
+                      className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
+                        t.priority === "high"
+                          ? "bg-[#F6DDB8]/70 text-[#B5793A]"
+                          : "border border-[#E8E5DF] text-[#7B7770]"
+                      }`}
+                    >
+                      {t.priority === "high" ? "Важливо ✓" : "Важливо"}
+                    </button>
+                    {t.time && (
+                      <span className="text-xs font-semibold text-[#191815]">
+                        {t.time}
                       </span>
                     )}
-                    <span className="text-xs text-[#7B7770]">
-                      {formatDuration(t.duration)}
-                    </span>
+                    {t.deadline && (
+                      <span className="text-xs text-[#7B7770]">
+                        до {formatDeadline(t.deadline)}
+                      </span>
+                    )}
                   </div>
                 </>
               )}
@@ -759,7 +631,7 @@ export default function Home() {
           ))}
         </ul>
         <p className="mt-2 text-center text-xs text-[#7B7770]">
-          Тапни назву — виправити · мітку — перенести в «Мій день» чи «На потім»
+          Тапни назву чи мітку — усе можна змінити
         </p>
 
         <div className="mt-6 flex flex-col gap-2">
@@ -784,29 +656,20 @@ export default function Home() {
   if (view === "thought") {
     const n = lastBatch.length;
     const attention = lastBatch.filter((t) => t.list === "today").length;
-    const kept = n - attention;
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
         <Nora mood="happy" size={96} />
         <div className="serif space-y-3 text-[20px] leading-snug text-[#191815]">
           <p className="rise-1">Готово.</p>
-          <p className="rise-1">Я знайшла {spravPlural(n)}.</p>
           <p className="rise-2">
-            {attention === 0
-              ? "Сьогодні жодна не термінова — все під контролем."
-              : attention === 1
-              ? "Одна з них потребує уваги сьогодні."
-              : `${attention} з них потребують уваги сьогодні.`}
+            {attention > 0
+              ? `Я виділила ${spravPlural(n)} й додала ${attention} у твій день.`
+              : `Я виділила ${spravPlural(n)} — усі можуть почекати, я їх збережу.`}
           </p>
-          {kept > 0 && (
-            <p className="rise-3 text-[#7B7770]">
-              Решту збережу у списку — вони не загубляться.
-            </p>
-          )}
         </div>
         <button
           onClick={() => setView("today")}
-          className="rise-4 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+          className="rise-3 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
         >
           Показати мій день
         </button>
@@ -850,7 +713,7 @@ export default function Home() {
             isToday ? "text-[#F6F5F2]" : "text-[#7B7770]"
           }`}
         >
-          Мій день{plan ? ` · ${plannedTasks.length}` : ""}
+          Мій день{dayList.length > 0 ? ` · ${dayList.length}` : ""}
         </button>
         <button
           onClick={() => setView("all")}
@@ -864,53 +727,14 @@ export default function Home() {
 
       <div key={view} className="tab-in flex flex-col gap-4">
         {isToday ? (
-          !plan ? (
-            /* ── Стан 1: план не сформовано ── */
-            <div className="flex flex-col items-center gap-5 pt-4 text-center">
-              <h2 className="serif text-[22px] text-[#191815]">
-                Скільки часу маєш сьогодні?
-              </h2>
-              <div className="flex items-center gap-6">
-                <button
-                  onClick={() => changeHours(-30)}
-                  className="flex h-12 w-12 items-center justify-center rounded-full border border-[#E8E5DF] bg-white/70 text-xl text-[#191815] transition active:scale-90"
-                  aria-label="Менше часу"
-                >
-                  −
-                </button>
-                <span className="serif min-w-24 text-[28px] text-[#191815]">
-                  {formatHours(hours)}
-                </span>
-                <button
-                  onClick={() => changeHours(30)}
-                  className="flex h-12 w-12 items-center justify-center rounded-full border border-[#E8E5DF] bg-white/70 text-xl text-[#191815] transition active:scale-90"
-                  aria-label="Більше часу"
-                >
-                  +
-                </button>
-              </div>
-              <button
-                onClick={makePlan}
-                disabled={activeTasks.length === 0}
-                className="w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98] disabled:opacity-40"
-              >
-                ⚡ Спланувати день
-              </button>
-              <p className="text-sm text-[#7B7770]">
-                {activeTasks.length === 0
-                  ? "Спершу розкажи мені, що на думці"
-                  : `У списку — ${spravPlural(activeTasks.length).replace("справу", "справа")}`}
-              </p>
-            </div>
-          ) : (
-            /* ── Стан 2: план сформовано ── */
-            <>
+          <>
+            {dayList.length > 0 && (
               <div className="rounded-2xl border border-[#E8E5DF] bg-white/60 p-3.5">
                 <div className="flex items-baseline justify-between text-sm">
                   <span className="font-medium text-[#191815]">
-                    {formatDuration(plannedTotalMin)} із {formatHours(plan.availableMin)}
+                    Сьогодні {spravCount(dayList.length)}
                   </span>
-                  <span className="text-[#7B7770]">
+                  <span className="flex-none text-[#7B7770]">
                     виконано {progressPct}%
                   </span>
                 </div>
@@ -921,84 +745,41 @@ export default function Home() {
                   />
                 </div>
               </div>
+            )}
 
-              {(reaction || allDone) && (
-                <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
-                  {reaction || "Усе виконано. Сьогодні ти молодець."}
+            {(reaction || allDone) && (
+              <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
+                {reaction || "Усе виконано. Сьогодні ти молодець."}
+              </p>
+            )}
+
+            {firstOpen && !allDone && !reaction && (
+              <p className="serif text-center text-[15px] italic leading-relaxed text-[#7B7770]">
+                Почни з «{firstOpen.title}» — {recommendReason(firstOpen)}.
+              </p>
+            )}
+
+            {dayList.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
+                <p className="serif text-[17px] text-[#191815]">Поки тихо.</p>
+                <p className="mt-1 text-sm text-[#7B7770]">
+                  Розкажи, що на думці.
                 </p>
-              )}
-
-              {plannedOpen.length > 0 && !reaction && (
-                <p className="text-center text-sm text-[#7B7770]">
-                  Почни з:{" "}
-                  <span className="font-medium text-[#191815]">
-                    {plannedOpen[0].title}
-                  </span>
-                </p>
-              )}
-
+              </div>
+            ) : (
               <ul className="flex flex-col gap-2">
-                {plannedTasks.map((t, i) => (
+                {dayList.map((t, i) => (
                   <TaskRow
                     key={t.id}
                     task={t}
                     index={i}
                     onToggle={toggleDone}
                     onEdit={() => setEditing(t)}
-                    onRemoveFromPlan={!t.done ? removeFromPlan : undefined}
                   />
                 ))}
               </ul>
-
-              {leftout.length > 0 && (
-                <div className="rounded-2xl border border-[#E8E5DF] bg-white/50">
-                  <button
-                    onClick={() => setLeftoutOpen((o) => !o)}
-                    className="flex w-full items-center justify-between p-3.5 text-sm text-[#7B7770]"
-                  >
-                    <span>Не влізло сьогодні ({leftout.length})</span>
-                    <span>{leftoutOpen ? "▴" : "▾"}</span>
-                  </button>
-                  {leftoutOpen && (
-                    <ul className="flex flex-col gap-2 px-3.5 pb-3.5">
-                      {leftout.map((lo) => {
-                        const t = tasks.find((x) => x.id === lo.id);
-                        if (!t || t.done) return null;
-                        return (
-                          <li
-                            key={lo.id}
-                            className="flex items-center gap-3 rounded-xl border border-[#E8E5DF] bg-white/70 p-3"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-[14px] text-[#191815]">
-                                {t.title}
-                              </p>
-                              <p className="text-xs text-[#7B7770]">
-                                💡 {lo.reason}
-                              </p>
-                            </div>
-                            <button
-                              onClick={() => addToPlan(lo.id)}
-                              className="flex-none rounded-full border border-[#C88A4E]/50 px-2.5 py-1.5 text-xs font-medium text-[#B5793A] transition active:scale-95"
-                            >
-                              У день →
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              <button
-                onClick={resetPlan}
-                className="self-center text-sm text-[#7B7770] underline underline-offset-4 transition active:text-[#191815]"
-              >
-                Переспланувати
-              </button>
-            </>
-          )
+            )}
+          </>
         ) : (
           <>
             <button
@@ -1036,7 +817,7 @@ export default function Home() {
                           onToggle={toggleDone}
                           onEdit={() => setEditing(t)}
                           onMoveToday={
-                            plan && !plan.ids.includes(t.id) && !t.done
+                            t.list === "inbox" && !isBurning(t) && !t.done
                               ? moveToToday
                               : undefined
                           }
@@ -1091,17 +872,16 @@ function TaskRow({
   onToggle,
   onEdit,
   onMoveToday,
-  onRemoveFromPlan,
 }: {
   task: Task;
   index: number;
   onToggle: (id: string) => void;
   onEdit: () => void;
   onMoveToday?: (id: string) => void;
-  onRemoveFromPlan?: (id: string) => void;
 }) {
   const burning = isBurning(task);
   const important = task.priority === "high" && !burning;
+  const hasMeta = burning || important || task.time || task.deadline;
 
   const surface = burning
     ? "border-l-4 border-[#E8E5DF] border-l-[#A8402F] bg-[#F7E7E2]"
@@ -1129,27 +909,30 @@ function TaskRow({
       </button>
       <div className="min-w-0 flex-1">
         <p
-          className={`truncate text-[15px] text-[#191815] ${
+          className={`text-[15px] leading-snug text-[#191815] ${
             task.done ? "line-through" : ""
           }`}
         >
           {task.title}
         </p>
-        <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#7B7770]">
-          {burning && (
-            <span className="rounded-full bg-[#A8402F]/10 px-2 py-0.5 font-medium text-[#A8402F]">
-              прострочено
-            </span>
-          )}
-          {important && (
-            <span className="font-medium text-[#B5793A]">Важливо</span>
-          )}
-          {task.time && (
-            <span className="font-semibold text-[#191815]">{task.time}</span>
-          )}
-          <span>{formatDuration(task.duration)}</span>
-          {task.deadline && <span>· до {formatDeadline(task.deadline)}</span>}
-        </p>
+        {hasMeta && (
+          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#7B7770]">
+            {burning && (
+              <span className="rounded-full bg-[#A8402F]/10 px-2 py-0.5 font-medium text-[#A8402F]">
+                прострочено
+              </span>
+            )}
+            {important && (
+              <span className="font-medium text-[#B5793A]">Важливо</span>
+            )}
+            {task.time && (
+              <span className="font-semibold text-[#191815]">{task.time}</span>
+            )}
+            {task.deadline && !burning && (
+              <span>до {formatDeadline(task.deadline)}</span>
+            )}
+          </p>
+        )}
       </div>
       {onMoveToday && (
         <button
@@ -1157,15 +940,6 @@ function TaskRow({
           className="flex-none rounded-full border border-[#C88A4E]/50 px-2.5 py-1.5 text-xs font-medium text-[#B5793A] transition active:scale-95"
         >
           У день →
-        </button>
-      )}
-      {onRemoveFromPlan && (
-        <button
-          onClick={() => onRemoveFromPlan(task.id)}
-          aria-label="Прибрати з плану"
-          className="flex h-9 w-9 flex-none items-center justify-center rounded-xl text-[#7B7770] transition active:scale-90 active:text-[#A8402F]"
-        >
-          −
         </button>
       )}
       <button
@@ -1198,8 +972,9 @@ function EditSheet({
   const [time, setTime] = useState(task.time || "");
   const [deadline, setDeadline] = useState(task.deadline || "");
   const [priority, setPriority] = useState<Priority>(task.priority);
-  const [duration, setDuration] = useState(task.duration || 30);
+  const [confirmPostpone, setConfirmPostpone] = useState(false);
   const isNew = task.title === "";
+  const burning = isBurning(task);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/30" onClick={onClose}>
@@ -1241,40 +1016,19 @@ function EditSheet({
           </label>
         </div>
         <div className="mt-3">
-          <p className="mb-1 text-xs text-[#7B7770]">Тривалість</p>
-          <div className="flex overflow-hidden rounded-2xl border border-[#E8E5DF]">
-            {[15, 30, 60, 120, 180].map((m) => (
-              <button
-                key={m}
-                onClick={() => setDuration(m)}
-                className={`flex-1 py-3 text-sm transition ${
-                  duration === m
-                    ? "bg-[#191815] text-[#F6F5F2]"
-                    : "bg-white/70 text-[#7B7770]"
-                }`}
-              >
-                {m < 60 ? `${m}хв` : `${m / 60}год`}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="mt-3">
           <p className="mb-1 text-xs text-[#7B7770]">Пріоритет</p>
-          <div className="flex overflow-hidden rounded-2xl border border-[#E8E5DF]">
-            {(["high", "medium", "low"] as Priority[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPriority(p)}
-                className={`flex-1 py-3 text-sm transition ${
-                  priority === p
-                    ? "bg-[#191815] text-[#F6F5F2]"
-                    : "bg-white/70 text-[#7B7770]"
-                }`}
-              >
-                {PRIORITY_LABEL[p]}
-              </button>
-            ))}
-          </div>
+          <button
+            onClick={() =>
+              setPriority((p) => (p === "high" ? "medium" : "high"))
+            }
+            className={`w-full rounded-2xl py-3 text-sm font-medium transition active:scale-[0.98] ${
+              priority === "high"
+                ? "bg-[#F6DDB8]/70 text-[#B5793A]"
+                : "border border-[#E8E5DF] bg-white/70 text-[#7B7770]"
+            }`}
+          >
+            {priority === "high" ? "Важливо ✓" : "Позначити як важливу"}
+          </button>
         </div>
         <button
           onClick={() => {
@@ -1286,7 +1040,6 @@ function EditSheet({
               time: time || null,
               deadline: deadline || null,
               priority,
-              duration,
               list: priority === "high" ? "today" : task.list,
             });
           }}
@@ -1294,30 +1047,58 @@ function EditSheet({
         >
           Зберегти
         </button>
-        <div className="mt-2 flex gap-2">
-          {!isNew &&
-            (task.list === "today" ? (
+        {confirmPostpone ? (
+          <div className="rise mt-2 rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5">
+            <p className="mb-2 text-center text-sm text-[#191815]">
+              Перенести на потім і зняти позначку «Важливо»?
+            </p>
+            <div className="flex gap-2">
               <button
                 onClick={() => onPostpone(task.id)}
-                className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#7B7770] transition active:scale-[0.98]"
+                className="flex-1 rounded-2xl bg-[#191815] py-3 text-sm font-medium text-[#F6F5F2] transition active:scale-[0.98]"
               >
-                Відкласти на потім
+                Так, перенести
               </button>
-            ) : (
               <button
-                onClick={() => onMoveToday(task.id)}
-                className="flex-1 rounded-2xl border border-[#C88A4E]/50 py-3.5 text-sm font-medium text-[#B5793A] transition active:scale-[0.98]"
+                onClick={() => setConfirmPostpone(false)}
+                className="flex-1 rounded-2xl border border-[#E8E5DF] py-3 text-sm text-[#7B7770] transition active:scale-[0.98]"
               >
-                Взяти в Мій день
+                Залишити
               </button>
-            ))}
-          <button
-            onClick={() => onDelete(task.id)}
-            className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#A8402F] transition active:scale-[0.98]"
-          >
-            {isNew ? "Скасувати" : "Видалити"}
-          </button>
-        </div>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-2 flex gap-2">
+            {/* Прострочене не відкладається — воно або робиться, або отримує новий дедлайн */}
+            {!isNew &&
+              !burning &&
+              (task.list === "today" ? (
+                <button
+                  onClick={() =>
+                    priority === "high"
+                      ? setConfirmPostpone(true)
+                      : onPostpone(task.id)
+                  }
+                  className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#7B7770] transition active:scale-[0.98]"
+                >
+                  Відкласти на потім
+                </button>
+              ) : (
+                <button
+                  onClick={() => onMoveToday(task.id)}
+                  className="flex-1 rounded-2xl border border-[#C88A4E]/50 py-3.5 text-sm font-medium text-[#B5793A] transition active:scale-[0.98]"
+                >
+                  Взяти в Мій день
+                </button>
+              ))}
+            <button
+              onClick={() => onDelete(task.id)}
+              className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#A8402F] transition active:scale-[0.98]"
+            >
+              {isNew ? "Скасувати" : "Видалити"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
