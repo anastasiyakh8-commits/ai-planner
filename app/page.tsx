@@ -39,6 +39,20 @@ const DONE_REACTIONS = [
 
 const PRIORITY_ORDER: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
+/* iOS Safari погано тримає безперервне розпізнавання — вмикаємо сумісний режим */
+function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent);
+}
+
+function speechErrorText(code: string): string {
+  if (code === "not-allowed" || code === "service-not-allowed")
+    return "Дай браузеру доступ до мікрофона (у налаштуваннях сайту) — або надрукуй текстом.";
+  if (code === "no-speech")
+    return "Я нічого не почула. Спробуй ще раз ближче до мікрофона.";
+  return "Голос у цьому браузері вередує. Найкраще він працює в Chrome — або просто надрукуй текстом.";
+}
+
 function uid(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -301,7 +315,7 @@ export default function Home() {
     if (!SR) return;
     const rec = new SR();
     rec.lang = "uk-UA";
-    rec.continuous = true;
+    rec.continuous = !isIOS(); // на iOS безперервний режим не віддає текст
     rec.interimResults = true;
     baseTextRef.current = draft ? draft.trimEnd() + " " : "";
     rec.onresult = (e: any) => {
@@ -315,7 +329,10 @@ export default function Home() {
       setDraft(baseTextRef.current + finalText + interim);
     };
     rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
+    rec.onerror = (e: any) => {
+      setListening(false);
+      if (e?.error !== "aborted") setError(speechErrorText(e?.error || ""));
+    };
     recognitionRef.current = rec;
     try {
       rec.start();
@@ -1159,6 +1176,7 @@ function EditSheet({
   const [confirmPostpone, setConfirmPostpone] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dictating, setDictating] = useState(false);
+  const [dictError, setDictError] = useState<string | null>(null);
   const sheetRecRef = useRef<any>(null);
   const titleBaseRef = useRef("");
   const isNew = task.title === "";
@@ -1194,11 +1212,15 @@ function EditSheet({
       setTitle(titleBaseRef.current + finalText + interim);
     };
     rec.onend = () => setDictating(false);
-    rec.onerror = () => setDictating(false);
+    rec.onerror = (e: any) => {
+      setDictating(false);
+      if (e?.error !== "aborted") setDictError(speechErrorText(e?.error || ""));
+    };
     sheetRecRef.current = rec;
     try {
       rec.start();
       setDictating(true);
+      setDictError(null);
     } catch {
       setDictating(false);
     }
@@ -1243,23 +1265,28 @@ function EditSheet({
             Слухаю… кажи назву справи
           </p>
         )}
-        <div className="mt-3 flex gap-3">
-          <label className="flex-1 text-xs text-[#6E6A61]">
+        {dictError && !dictating && (
+          <p className="mt-1.5 rounded-xl bg-[#F7E7E2] p-2 text-center text-xs text-[#A8402F]">
+            {dictError}
+          </p>
+        )}
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <label className="min-w-0 text-xs text-[#6E6A61]">
             Час
             <input
               type="time"
               value={time}
               onChange={(e) => setTime(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
+              className="mt-1 block h-12 w-full min-w-0 appearance-none rounded-2xl border border-[#E8E5DF] bg-white/70 px-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
             />
           </label>
-          <label className="flex-1 text-xs text-[#6E6A61]">
+          <label className="min-w-0 text-xs text-[#6E6A61]">
             Дедлайн
             <input
               type="date"
               value={deadline}
               onChange={(e) => setDeadline(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
+              className="mt-1 block h-12 w-full min-w-0 appearance-none rounded-2xl border border-[#E8E5DF] bg-white/70 px-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
             />
           </label>
         </div>
