@@ -204,6 +204,68 @@ function recommendReason(t: Task): string {
   return "вона перша в черзі";
 }
 
+/* Свайп вліво → видалити (з кнопкою-фолбеком для десктопа) */
+function SwipeRow({
+  onDelete,
+  children,
+}: {
+  onDelete: () => void;
+  children: React.ReactNode;
+}) {
+  const [dx, setDx] = useState(0);
+  const [leaving, setLeaving] = useState(false);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const horiz = useRef(false);
+  const dragging = start.current !== null;
+  return (
+    <div className="relative overflow-hidden rounded-2xl">
+      <div
+        className="absolute inset-0 flex items-center justify-end rounded-2xl bg-[#A8402F]/10 pr-5 text-sm font-medium text-[#A8402F] transition-opacity"
+        style={{ opacity: dx < -24 || leaving ? 1 : 0 }}
+        aria-hidden
+      >
+        Видалити
+      </div>
+      <div
+        style={{
+          transform: `translateX(${leaving ? -560 : dx}px)`,
+          transition: dragging ? "none" : "transform 0.25s ease",
+        }}
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          start.current = { x: t.clientX, y: t.clientY };
+          horiz.current = false;
+        }}
+        onTouchMove={(e) => {
+          if (!start.current) return;
+          const t = e.touches[0];
+          const ddx = t.clientX - start.current.x;
+          const ddy = t.clientY - start.current.y;
+          if (
+            !horiz.current &&
+            Math.abs(ddx) > 12 &&
+            Math.abs(ddx) > Math.abs(ddy)
+          ) {
+            horiz.current = true;
+          }
+          if (horiz.current) setDx(Math.min(0, ddx));
+        }}
+        onTouchEnd={() => {
+          start.current = null;
+          if (dx < -80) {
+            setLeaving(true);
+            setTimeout(onDelete, 220);
+          } else {
+            setDx(0);
+          }
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function Nora({ mood, size }: { mood: Mood; size: number }) {
   return (
     <div
@@ -409,6 +471,20 @@ export default function Home() {
       return null;
     });
   }, [pendingEditText]);
+
+  const removePending = useCallback((idx: number) => {
+    setPending((prev) => {
+      const next = prev.filter((_, i) => i !== idx);
+      if (next.length === 0) {
+        // Усе прибрано — повертаємось до запису
+        setDraft("");
+        setError(null);
+        setView("capture");
+      }
+      return next;
+    });
+    setPendingEditIdx(null);
+  }, []);
 
   const togglePendingDay = useCallback((idx: number) => {
     setPending((prev) =>
@@ -733,9 +809,11 @@ export default function Home() {
             return (
             <li
               key={t.id}
-              className="rise rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5"
+              className="rise"
               style={{ animationDelay: `${idx * 70}ms` }}
             >
+             <SwipeRow onDelete={() => removePending(idx)}>
+              <div className="rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5">
               {pendingEditIdx === idx ? (
                 <input
                   value={pendingEditText}
@@ -750,15 +828,24 @@ export default function Home() {
                 />
               ) : (
                 <>
-                  <button
-                    onClick={() => {
-                      setPendingEditIdx(idx);
-                      setPendingEditText(t.title);
-                    }}
-                    className="w-full text-left text-[16px] leading-snug text-[#191815]"
-                  >
-                    {t.title}
-                  </button>
+                  <div className="flex items-start gap-2">
+                    <button
+                      onClick={() => {
+                        setPendingEditIdx(idx);
+                        setPendingEditText(t.title);
+                      }}
+                      className="min-w-0 flex-1 text-left text-[16px] leading-snug text-[#191815]"
+                    >
+                      {t.title}
+                    </button>
+                    <button
+                      onClick={() => removePending(idx)}
+                      aria-label="Видалити зі списку"
+                      className="flex h-7 w-7 flex-none items-center justify-center rounded-lg text-[#6E6A61] transition active:scale-90 active:text-[#A8402F]"
+                    >
+                      ✕
+                    </button>
+                  </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => togglePendingDay(idx)}
@@ -798,12 +885,14 @@ export default function Home() {
                   )}
                 </>
               )}
+              </div>
+             </SwipeRow>
             </li>
             );
           })}
         </ul>
         <p className="mt-2 text-center text-xs text-[#6E6A61]">
-          Тапни назву чи мітку — усе можна змінити
+          Тапни назву чи мітку — змінити · свайп вліво чи ✕ — видалити
         </p>
 
         <div className="mt-6 flex flex-col gap-2">
