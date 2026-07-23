@@ -30,6 +30,13 @@ const PROCESS_PHRASES = [
 const EXAMPLE_DUMP =
   "Підготувати презентацію для інвесторів до пʼятниці, подзвонити підряднику о 14:00, купити подарунок мамі та розібрати пошту";
 
+const DONE_REACTIONS = [
+  "🎯 Один крок зроблено. Гарний темп.",
+  "⚡ Ще одна є. Рухаємось.",
+  "🌿 Зроблено. Стало легше, правда?",
+  "💪 Є! День піддається.",
+];
+
 const PRIORITY_ORDER: Record<Priority, number> = { high: 0, medium: 1, low: 2 };
 
 function uid(): string {
@@ -46,12 +53,23 @@ function todayIso(): string {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
-function formatDeadline(iso: string): string {
+function isoOfDaysFromNow(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/* Людська мітка дедлайну: «сьогодні», «завтра» або «до 25.07» */
+function deadlineLabel(iso: string): string {
+  if (iso === todayIso()) return "сьогодні";
+  if (iso === isoOfDaysFromNow(1)) return "завтра";
   const parts = iso.split("-").map(Number);
   const m = parts[1];
   const d = parts[2];
   if (!m || !d) return iso;
-  return `${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}`;
+  return `до ${String(d).padStart(2, "0")}.${String(m).padStart(2, "0")}`;
 }
 
 function greeting(): string {
@@ -117,16 +135,41 @@ function spravCount(n: number): string {
   return `${n} справ`;
 }
 
+/* Прострочене = дедлайн у минулому АБО сьогодні, але вказаний час уже минув.
+   Дедлайн «сьогодні» без часу — це «зроби сьогодні», не провал. */
 function isBurning(t: Task): boolean {
-  return Boolean(t.deadline && t.deadline <= todayIso() && !t.done);
+  if (!t.deadline || t.done) return false;
+  const today = todayIso();
+  if (t.deadline < today) return true;
+  if (t.deadline === today && t.time) {
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(
+      now.getMinutes()
+    ).padStart(2, "0")}`;
+    return t.time < hhmm;
+  }
+  return false;
 }
 
+/* Порядок дня: прострочені → дедлайн сьогодні (за часом) → важливі →
+   найближчі дедлайни → з часом → решта. Нові й старі справи змішуються чесно. */
 function sortTasks(list: Task[]): Task[] {
+  const today = todayIso();
+  const rank = (t: Task): number => {
+    if (isBurning(t)) return 0;
+    if (t.deadline === today) return 1;
+    if (t.priority === "high") return 2;
+    if (t.deadline) return 3;
+    if (t.time) return 4;
+    return 5;
+  };
   return [...list].sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
-    const ab = isBurning(a) ? 0 : 1;
-    const bb = isBurning(b) ? 0 : 1;
-    if (ab !== bb) return ab - bb;
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (a.deadline && b.deadline && a.deadline !== b.deadline)
+      return a.deadline < b.deadline ? -1 : 1;
     if (PRIORITY_ORDER[a.priority] !== PRIORITY_ORDER[b.priority]) {
       return PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
     }
@@ -315,8 +358,12 @@ export default function Home() {
           priority: t.priority,
           time: t.time,
           deadline: t.deadline,
-          // Продуктове правило: важливе завжди потребує уваги сьогодні.
-          list: t.priority === "high" ? ("today" as const) : t.list,
+          // Продуктові правила: важливе і те, що має дедлайн сьогодні/прострочене — у «Мій день».
+          list:
+            t.priority === "high" ||
+            (t.deadline && t.deadline <= todayIso())
+              ? ("today" as const)
+              : t.list,
           id: uid(),
           done: false,
           createdAt: Date.now() + i,
@@ -397,8 +444,8 @@ export default function Home() {
         const left = dayList.filter((x) => !x.done).length;
         setReaction(
           left === 0 && dayList.length > 0
-            ? "Усе виконано. Сьогодні ти молодець."
-            : "Один крок зроблено. Гарний темп."
+            ? "🏆 Усе виконано. Сьогодні ти молодець."
+            : DONE_REACTIONS[Math.floor(Math.random() * DONE_REACTIONS.length)]
         );
         setTimeout(() => setReaction(null), 3000);
       }
@@ -421,9 +468,57 @@ export default function Home() {
     setEditing(null);
   }, []);
 
+  // Нова справа, додана вручну, теж проходить через Нору:
+  // «обід сьогодні до восьмої» → чиста назва + час + дедлайн + «Мій день».
+  const createSmart = useCallback(async (draftTask: Task): Promise<void> => {
+    let final = draftTask;
+    try {
+      const res = await fetch("/api/parse", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: draftTask.title }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const p = (data.tasks || [])[0];
+        if (p && typeof p.title === "string" && p.title) {
+          final = {
+            ...draftTask,
+            title: p.title,
+            time: draftTask.time || p.time || null,
+            deadline: draftTask.deadline || p.deadline || null,
+            priority:
+              draftTask.priority === "high" ? "high" : p.priority || "medium",
+          };
+        }
+      }
+    } catch {
+      // AI недоступний — зберігаємо як введено, нічого не губимо
+    }
+    const goesToday =
+      final.priority === "high" ||
+      Boolean(final.deadline && final.deadline <= todayIso());
+    final = { ...final, list: goesToday ? "today" : final.list };
+    setTasks((prev) => [...prev, final]);
+    setEditing(null);
+  }, []);
+
   // Закрити день: виконане зроблене — прибираємо його зі списків
   const clearDone = useCallback(() => {
-    setTasks((prev) => prev.filter((t) => !t.done));
+    setTasks((prev) => {
+      const wasAllDone =
+        prev.filter((t) => t.list === "today" || isBurning(t)).length > 0 &&
+        prev
+          .filter((t) => t.list === "today" || isBurning(t))
+          .every((t) => t.done);
+      setReaction(
+        wasAllDone
+          ? "🌙 День закрито. Побачимось завтра."
+          : "🧹 Виконане прибрано. Далі — по черзі."
+      );
+      setTimeout(() => setReaction(null), 3500);
+      return prev.filter((t) => !t.done);
+    });
   }, []);
 
   const startCreate = useCallback(() => {
@@ -461,6 +556,8 @@ export default function Home() {
       )
     );
     setEditing(null);
+    setReaction("📦 Перенесла на потім. Нічого не загубиться.");
+    setTimeout(() => setReaction(null), 3000);
   }, []);
 
   const activeTasks = tasks.filter((t) => !t.done);
@@ -492,7 +589,7 @@ export default function Home() {
       <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
         <Nora mood="idle" size={112} />
         <div>
-          <p className="serif rise mb-6 text-xs uppercase tracking-[0.35em] text-[#7B7770]">
+          <p className="serif rise mb-6 text-xs uppercase tracking-[0.35em] text-[#6E6A61]">
             НОРА
           </p>
           <div className="serif space-y-2 text-[22px] leading-snug text-[#191815]">
@@ -507,7 +604,7 @@ export default function Home() {
             markSeen();
             setView("capture");
           }}
-          className="rise-4 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+          className="rise-4 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[16px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
         >
           Розповісти
         </button>
@@ -521,7 +618,7 @@ export default function Home() {
       return (
         <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-6 pb-16 text-center">
           <Nora mood="thinking" size={112} />
-          <p className="serif rise text-[18px] italic text-[#7B7770]">
+          <p className="serif rise text-[18px] italic text-[#6E6A61]">
             {PROCESS_PHRASES[phrase]}
           </p>
         </main>
@@ -534,7 +631,7 @@ export default function Home() {
             stopListening();
             setView("today");
           }}
-          className="self-start text-sm text-[#7B7770] transition active:text-[#191815]"
+          className="self-start text-sm text-[#6E6A61] transition active:text-[#191815]"
         >
           ← Мій день
         </button>
@@ -548,7 +645,7 @@ export default function Home() {
           {speechSupported && (
             <button
               onClick={toggleListening}
-              className={`flex w-full max-w-xs items-center justify-center gap-2 rounded-2xl px-6 py-4 text-[15px] font-medium transition active:scale-[0.98] ${
+              className={`flex w-full max-w-xs items-center justify-center gap-2 rounded-2xl px-6 py-4 text-[16px] font-medium transition active:scale-[0.98] ${
                 listening
                   ? "bg-[#B5793A] text-white"
                   : "bg-[#191815] text-[#F6F5F2]"
@@ -564,7 +661,7 @@ export default function Home() {
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Або запиши текстом…"
             rows={4}
-            className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-left text-[15px] leading-relaxed text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
+            className="w-full resize-none rounded-2xl border border-[#E8E5DF] bg-white/70 p-4 text-left text-[16px] leading-relaxed text-[#191815] placeholder-[#6E6A61] outline-none focus:border-[#C88A4E]"
           />
 
           {error && (
@@ -576,7 +673,7 @@ export default function Home() {
           {draft.trim() && !listening && (
             <button
               onClick={parse}
-              className="rise w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+              className="rise w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[16px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
             >
               Далі
             </button>
@@ -585,7 +682,7 @@ export default function Home() {
           {!draft.trim() && !listening && (
             <button
               onClick={() => setDraft(EXAMPLE_DUMP)}
-              className="text-sm text-[#7B7770] underline-offset-4 transition active:text-[#191815]"
+              className="text-sm text-[#6E6A61] underline-offset-4 transition active:text-[#191815]"
             >
               ✨ Заповнити прикладом
             </button>
@@ -604,7 +701,7 @@ export default function Home() {
           <h1 className="serif mt-3 text-[24px] leading-snug text-[#191815]">
             Ось що я зрозуміла
           </h1>
-          <p className="text-sm text-[#7B7770]">Перевір, чи все правильно</p>
+          <p className="text-sm text-[#6E6A61]">Перевір, чи все правильно</p>
         </div>
 
         <ul className="mt-6 flex flex-col gap-2">
@@ -632,7 +729,7 @@ export default function Home() {
                     if (e.key === "Escape") setPendingEditIdx(null);
                   }}
                   autoFocus
-                  className="w-full rounded-xl border border-[#C88A4E] bg-white p-2 text-[15px] text-[#191815] outline-none"
+                  className="w-full rounded-xl border border-[#C88A4E] bg-white p-2 text-[16px] text-[#191815] outline-none"
                 />
               ) : (
                 <>
@@ -641,7 +738,7 @@ export default function Home() {
                       setPendingEditIdx(idx);
                       setPendingEditText(t.title);
                     }}
-                    className="w-full text-left text-[15px] leading-snug text-[#191815]"
+                    className="w-full text-left text-[16px] leading-snug text-[#191815]"
                   >
                     {t.title}
                   </button>
@@ -651,7 +748,7 @@ export default function Home() {
                       className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
                         t.list === "today"
                           ? "bg-[#191815] text-[#F6F5F2]"
-                          : "border border-[#E8E5DF] text-[#7B7770]"
+                          : "border border-[#E8E5DF] text-[#6E6A61]"
                       }`}
                     >
                       {t.list === "today" ? "Мій день ✓" : "На потім"}
@@ -661,7 +758,7 @@ export default function Home() {
                       className={`rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
                         t.priority === "high"
                           ? "bg-[#F6DDB8]/70 text-[#B5793A]"
-                          : "border border-[#E8E5DF] text-[#7B7770]"
+                          : "border border-[#E8E5DF] text-[#6E6A61]"
                       }`}
                     >
                       {t.priority === "high" ? "Важливо ✓" : "Важливо"}
@@ -672,8 +769,8 @@ export default function Home() {
                       </span>
                     )}
                     {t.deadline && (
-                      <span className="text-xs text-[#7B7770]">
-                        до {formatDeadline(t.deadline)}
+                      <span className="text-xs text-[#6E6A61]">
+                        {deadlineLabel(t.deadline)}
                       </span>
                     )}
                   </div>
@@ -688,20 +785,20 @@ export default function Home() {
             );
           })}
         </ul>
-        <p className="mt-2 text-center text-xs text-[#7B7770]">
+        <p className="mt-2 text-center text-xs text-[#6E6A61]">
           Тапни назву чи мітку — усе можна змінити
         </p>
 
         <div className="mt-6 flex flex-col gap-2">
           <button
             onClick={confirmPending}
-            className="w-full rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+            className="w-full rounded-2xl bg-[#191815] px-6 py-4 text-[16px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
           >
             Все правильно
           </button>
           <button
             onClick={retryCapture}
-            className="w-full rounded-2xl border border-[#E8E5DF] px-6 py-3.5 text-[15px] text-[#7B7770] transition active:scale-[0.98]"
+            className="w-full rounded-2xl border border-[#E8E5DF] px-6 py-3.5 text-[16px] text-[#6E6A61] transition active:scale-[0.98]"
           >
             Записати ще раз
           </button>
@@ -727,7 +824,7 @@ export default function Home() {
         </div>
         <button
           onClick={() => setView("today")}
-          className="rise-3 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+          className="rise-3 w-full max-w-xs rounded-2xl bg-[#191815] px-6 py-4 text-[16px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
         >
           Показати мій день
         </button>
@@ -738,17 +835,15 @@ export default function Home() {
   /* ─────────── ГОЛОВНИЙ ЕКРАН: вкладки ─────────── */
   const isToday = view === "today";
 
-  const overdue = [...tasks]
-    .filter((t) => isBurning(t))
-    .sort((a, b) => ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
-  const withDeadline = [...tasks]
-    .filter((t) => !t.done && !isBurning(t) && t.deadline)
-    .sort((a, b) => ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
-  const noDeadline = sortTasks(
-    tasks.filter((t) => !t.done && !t.deadline && !isBurning(t))
+  // «На потім» — тільки те, чого НЕМАЄ в «Моєму дні» (два кошики без дублювання)
+  const laterTasks = tasks.filter(
+    (t) => !t.done && t.list === "inbox" && !isBurning(t)
   );
+  const withDeadline = [...laterTasks]
+    .filter((t) => t.deadline)
+    .sort((a, b) => ((a.deadline || "") < (b.deadline || "") ? -1 : 1));
+  const noDeadline = sortTasks(laterTasks.filter((t) => !t.deadline));
   const groups: { label: string; items: Task[]; alert?: boolean }[] = [
-    { label: "Прострочено", items: overdue, alert: true },
     { label: "З дедлайном", items: withDeadline },
     { label: "Без дедлайну", items: noDeadline },
   ];
@@ -757,7 +852,7 @@ export default function Home() {
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col gap-5 px-6 pb-32 pt-8">
       <header className="flex flex-col items-center gap-2 text-center">
         <Nora mood={mood} size={56} />
-        <p className="text-sm text-[#7B7770]">{greeting()}.</p>
+        <p className="text-sm text-[#6E6A61]">{greeting()}.</p>
       </header>
 
       <nav className="relative grid grid-cols-2 rounded-2xl border border-[#E8E5DF] bg-white/60 p-1">
@@ -770,7 +865,7 @@ export default function Home() {
         <button
           onClick={() => setView("today")}
           className={`relative z-10 py-3 text-sm font-medium transition-colors duration-300 ${
-            isToday ? "text-[#F6F5F2]" : "text-[#7B7770]"
+            isToday ? "text-[#F6F5F2]" : "text-[#6E6A61]"
           }`}
         >
           Мій день{dayList.length > 0 ? ` · ${dayList.length}` : ""}
@@ -778,12 +873,22 @@ export default function Home() {
         <button
           onClick={() => setView("all")}
           className={`relative z-10 py-3 text-sm font-medium transition-colors duration-300 ${
-            !isToday ? "text-[#F6F5F2]" : "text-[#7B7770]"
+            !isToday ? "text-[#F6F5F2]" : "text-[#6E6A61]"
           }`}
         >
-          Усі справи{activeTasks.length > 0 ? ` · ${activeTasks.length}` : ""}
+          На потім
+          {tasks.filter((t) => !t.done && t.list === "inbox" && !isBurning(t))
+            .length > 0
+            ? ` · ${tasks.filter((t) => !t.done && t.list === "inbox" && !isBurning(t)).length}`
+            : ""}
         </button>
       </nav>
+
+      {reaction && (
+        <p className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center text-sm text-[#6E9C86]">
+          {reaction}
+        </p>
+      )}
 
       <div key={view} className="tab-in flex flex-col gap-4">
         {isToday ? (
@@ -794,7 +899,7 @@ export default function Home() {
                   <span className="font-medium text-[#191815]">
                     Сьогодні {spravCount(dayList.length)}
                   </span>
-                  <span className="flex-none text-[#7B7770]">
+                  <span className="flex-none text-[#6E6A61]">
                     виконано {progressPct}%
                   </span>
                 </div>
@@ -807,21 +912,19 @@ export default function Home() {
               </div>
             )}
 
-            {(reaction || allDone) && (
+            {allDone && !reaction && (
               <div className="rise rounded-2xl bg-[#6E9C86]/10 p-3 text-center">
                 <p className="text-sm text-[#6E9C86]">
-                  {reaction || "Усе виконано. Сьогодні ти молодець."}
+                  🏆 Усе виконано. Сьогодні ти молодець.
                 </p>
-                {allDone && (
-                  <p className="mt-1 text-xs text-[#7B7770]">
-                    Можеш видихнути. Якщо щось спливе — я поруч 🎙
-                  </p>
-                )}
+                <p className="mt-1 text-xs text-[#6E6A61]">
+                  Можеш видихнути. Якщо щось спливе — я поруч 🎙
+                </p>
               </div>
             )}
 
             {firstOpen && !allDone && !reaction && (
-              <p className="serif text-center text-[15px] italic leading-relaxed text-[#7B7770]">
+              <p className="serif text-center text-[16px] italic leading-relaxed text-[#6E6A61]">
                 Почни з «{firstOpen.title}» — {recommendReason(firstOpen)}.
               </p>
             )}
@@ -829,7 +932,7 @@ export default function Home() {
             {dayList.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
                 <p className="serif text-[17px] text-[#191815]">Поки тихо.</p>
-                <p className="mt-1 text-sm text-[#7B7770]">
+                <p className="mt-1 text-sm text-[#6E6A61]">
                   Розкажи, що на думці.
                 </p>
               </div>
@@ -849,7 +952,7 @@ export default function Home() {
                 {doneCount > 0 && (
                   <button
                     onClick={clearDone}
-                    className="self-center text-sm text-[#7B7770] underline underline-offset-4 transition active:text-[#191815]"
+                    className="self-center text-sm text-[#6E6A61] underline underline-offset-4 transition active:text-[#191815]"
                   >
                     {allDone ? "Закрити день" : "Прибрати виконані"}
                   </button>
@@ -865,11 +968,13 @@ export default function Home() {
             >
               + Додати справу
             </button>
-            {tasks.length === 0 && (
+            {laterTasks.length === 0 && (
               <div className="rounded-2xl border border-dashed border-[#E8E5DF] p-8 text-center">
-                <p className="serif text-[17px] text-[#191815]">Поки тихо.</p>
-                <p className="mt-1 text-sm text-[#7B7770]">
-                  Розкажи, що на думці.
+                <p className="serif text-[17px] text-[#191815]">
+                  На потім нічого немає.
+                </p>
+                <p className="mt-1 text-sm text-[#6E6A61]">
+                  Все або в «Моєму дні», або ще в твоїй голові 🎙
                 </p>
               </div>
             )}
@@ -877,12 +982,7 @@ export default function Home() {
               (g) =>
                 g.items.length > 0 && (
                   <section key={g.label}>
-                    <h2
-                      className={`mb-2 text-center text-xs font-medium uppercase tracking-wider ${
-                        g.alert ? "text-[#A8402F]" : "text-[#7B7770]"
-                      }`}
-                    >
-                      {g.alert ? "⚠ " : ""}
+                    <h2 className="mb-2 text-center text-xs font-medium uppercase tracking-wider text-[#6E6A61]">
                       {g.label}
                     </h2>
                     <ul className="flex flex-col gap-2">
@@ -893,11 +993,7 @@ export default function Home() {
                           index={i}
                           onToggle={toggleDone}
                           onEdit={() => setEditing(t)}
-                          onMoveToday={
-                            t.list === "inbox" && !isBurning(t) && !t.done
-                              ? moveToToday
-                              : undefined
-                          }
+                          onMoveToday={moveToToday}
                         />
                       ))}
                     </ul>
@@ -921,6 +1017,7 @@ export default function Home() {
           speechSupported={speechSupported}
           onClose={() => setEditing(null)}
           onSave={saveTask}
+          onCreateSmart={createSmart}
           onPostpone={postpone}
           onMoveToday={moveToToday}
           onDelete={removeTask}
@@ -992,14 +1089,14 @@ function TaskRow({
         aria-label="Редагувати справу"
       >
         <p
-          className={`text-[15px] leading-snug text-[#191815] ${
+          className={`text-[16px] leading-snug text-[#191815] ${
             task.done ? "line-through" : ""
           }`}
         >
           {task.title}
         </p>
         {hasMeta && (
-          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#7B7770]">
+          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-[#6E6A61]">
             {burning && (
               <span className="rounded-full bg-[#A8402F]/10 px-2 py-0.5 font-medium text-[#A8402F]">
                 прострочено
@@ -1012,7 +1109,7 @@ function TaskRow({
               <span className="font-semibold text-[#191815]">{task.time}</span>
             )}
             {task.deadline && !burning && (
-              <span>до {formatDeadline(task.deadline)}</span>
+              <span>{deadlineLabel(task.deadline)}</span>
             )}
           </p>
         )}
@@ -1028,7 +1125,7 @@ function TaskRow({
       <button
         onClick={onEdit}
         aria-label="Редагувати"
-        className="flex h-9 w-9 flex-none items-center justify-center rounded-xl text-[#7B7770] transition active:scale-90 active:text-[#191815]"
+        className="flex h-9 w-9 flex-none items-center justify-center rounded-xl text-[#6E6A61] transition active:scale-90 active:text-[#191815]"
       >
         ✎
       </button>
@@ -1041,6 +1138,7 @@ function EditSheet({
   speechSupported,
   onClose,
   onSave,
+  onCreateSmart,
   onPostpone,
   onMoveToday,
   onDelete,
@@ -1049,6 +1147,7 @@ function EditSheet({
   speechSupported: boolean;
   onClose: () => void;
   onSave: (t: Task) => void;
+  onCreateSmart: (t: Task) => Promise<void>;
   onPostpone: (id: string) => void;
   onMoveToday: (id: string) => void;
   onDelete: (id: string) => void;
@@ -1058,6 +1157,7 @@ function EditSheet({
   const [deadline, setDeadline] = useState(task.deadline || "");
   const [priority, setPriority] = useState<Priority>(task.priority);
   const [confirmPostpone, setConfirmPostpone] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [dictating, setDictating] = useState(false);
   const sheetRecRef = useRef<any>(null);
   const titleBaseRef = useRef("");
@@ -1122,7 +1222,7 @@ function EditSheet({
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Що потрібно зробити?"
             autoFocus={isNew}
-            className="w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5 pr-12 text-[15px] text-[#191815] placeholder-[#7B7770] outline-none focus:border-[#C88A4E]"
+            className="w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5 pr-12 text-[16px] text-[#191815] placeholder-[#6E6A61] outline-none focus:border-[#C88A4E]"
           />
           {speechSupported && (
             <button
@@ -1131,7 +1231,7 @@ function EditSheet({
               className={`absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full transition active:scale-95 ${
                 dictating
                   ? "animate-pulse bg-[#B5793A] text-white"
-                  : "bg-[#E8E5DF]/70 text-[#7B7770]"
+                  : "bg-[#E8E5DF]/70 text-[#6E6A61]"
               }`}
             >
               <MicIcon size={18} />
@@ -1144,27 +1244,27 @@ function EditSheet({
           </p>
         )}
         <div className="mt-3 flex gap-3">
-          <label className="flex-1 text-xs text-[#7B7770]">
+          <label className="flex-1 text-xs text-[#6E6A61]">
             Час
             <input
               type="time"
               value={time}
               onChange={(e) => setTime(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[15px] text-[#191815] outline-none focus:border-[#C88A4E]"
+              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
             />
           </label>
-          <label className="flex-1 text-xs text-[#7B7770]">
+          <label className="flex-1 text-xs text-[#6E6A61]">
             Дедлайн
             <input
               type="date"
               value={deadline}
               onChange={(e) => setDeadline(e.target.value)}
-              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[15px] text-[#191815] outline-none focus:border-[#C88A4E]"
+              className="mt-1 w-full rounded-2xl border border-[#E8E5DF] bg-white/70 p-3 text-[16px] text-[#191815] outline-none focus:border-[#C88A4E]"
             />
           </label>
         </div>
         <div className="mt-3">
-          <p className="mb-1 text-xs text-[#7B7770]">Пріоритет</p>
+          <p className="mb-1 text-xs text-[#6E6A61]">Пріоритет</p>
           <button
             onClick={() =>
               setPriority((p) => (p === "high" ? "medium" : "high"))
@@ -1172,28 +1272,37 @@ function EditSheet({
             className={`w-full rounded-2xl py-3 text-sm font-medium transition active:scale-[0.98] ${
               priority === "high"
                 ? "bg-[#F6DDB8]/70 text-[#B5793A]"
-                : "border border-[#E8E5DF] bg-white/70 text-[#7B7770]"
+                : "border border-[#E8E5DF] bg-white/70 text-[#6E6A61]"
             }`}
           >
             {priority === "high" ? "Важливо ✓" : "Позначити як важливу"}
           </button>
         </div>
         <button
-          onClick={() => {
+          onClick={async () => {
             const finalTitle = title.trim() || task.title;
-            if (!finalTitle) return;
-            onSave({
+            if (!finalTitle || saving) return;
+            const built: Task = {
               ...task,
               title: finalTitle,
               time: time || null,
               deadline: deadline || null,
               priority,
               list: priority === "high" ? "today" : task.list,
-            });
+            };
+            if (isNew) {
+              // Нову справу пропускаємо через Нору (час/дата/пріоритет з тексту)
+              setSaving(true);
+              await onCreateSmart(built);
+              setSaving(false);
+            } else {
+              onSave(built);
+            }
           }}
-          className="mt-4 w-full rounded-2xl bg-[#191815] py-4 text-[15px] font-medium text-[#F6F5F2] transition active:scale-[0.98]"
+          disabled={saving}
+          className="mt-4 w-full rounded-2xl bg-[#191815] py-4 text-[16px] font-medium text-[#F6F5F2] transition active:scale-[0.98] disabled:opacity-60"
         >
-          Зберегти
+          {saving ? "Нора розбирає…" : "Зберегти"}
         </button>
         {confirmPostpone ? (
           <div className="rise mt-2 rounded-2xl border border-[#E8E5DF] bg-white/70 p-3.5">
@@ -1209,7 +1318,7 @@ function EditSheet({
               </button>
               <button
                 onClick={() => setConfirmPostpone(false)}
-                className="flex-1 rounded-2xl border border-[#E8E5DF] py-3 text-sm text-[#7B7770] transition active:scale-[0.98]"
+                className="flex-1 rounded-2xl border border-[#E8E5DF] py-3 text-sm text-[#6E6A61] transition active:scale-[0.98]"
               >
                 Залишити
               </button>
@@ -1227,7 +1336,7 @@ function EditSheet({
                       ? setConfirmPostpone(true)
                       : onPostpone(task.id)
                   }
-                  className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#7B7770] transition active:scale-[0.98]"
+                  className="flex-1 rounded-2xl border border-[#E8E5DF] py-3.5 text-sm text-[#6E6A61] transition active:scale-[0.98]"
                 >
                   Відкласти на потім
                 </button>
