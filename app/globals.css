@@ -144,8 +144,21 @@ input[type="date"], input[type="time"] {
   appearance: none;
   min-width: 0;
   text-align: left;
+  line-height: 1;
 }
+/* Внутрішній блок значення в Safari: розтягуємо на всю висоту і центруємо */
 input[type="date"]::-webkit-date-and-time-value,
 input[type="time"]::-webkit-date-and-time-value {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin: 0;
   text-align: left;
+}
+input[type="date"]::-webkit-datetime-edit,
+input[type="time"]::-webkit-datetime-edit {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0;
 }
